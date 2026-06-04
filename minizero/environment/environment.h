@@ -103,6 +103,12 @@ typedef minizero::env::tetrisblockpuzzle::TetrisBlockPuzzleAction Action;
 typedef minizero::env::tetrisblockpuzzle::TetrisBlockPuzzleEnv Environment;
 typedef minizero::env::tetrisblockpuzzle::TetrisBlockPuzzleEnvLoader EnvironmentLoader;
 #else
+#elif SHOGI66
+#include "shogi66.h"
+typedef minizero::env::shogi66::shogi66Action Action;
+typedef minizero::env::shogi66::shogi66Env Environment;
+typedef minizero::env::shogi66::shogi66EnvLoader EnvironmentLoader;
+#else
 #include "tictactoe.h"
 typedef minizero::env::tictactoe::TicTacToeAction Action;
 typedef minizero::env::tictactoe::TicTacToeEnv Environment;
