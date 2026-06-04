@@ -24,6 +24,16 @@ struct Piece {
     PieceType type;
 };
 
+class shogi66Env : public BaseBoardEnv<shogi66Action> {
+public:
+    shogi66Env() : BaseBoardEnv<shogi66Action>(kshogi66BoardSize) { reset(); }
+
+    void reset() override;
+    bool act(const shogi66Action& action) override;
+    bool ac;
+
+};
+
 } // namespace minizero::env::shogi66
 
 // class TicTacToeEnv : public BaseBoardEnv<TicTacToeAction> {
