@@ -54,6 +54,16 @@ public:
     shogi66Action(ActionType type, PieceType piece_type, int from, int to, bool promote, Player player);
     shogi66Action(const std::vector<std::string>& action_string_args);
 
+    std::string toConsoleString() const override;
+
+    inline ActionType getType() const {return type_;}
+    inline PieceType getPieceType() const {return piece_type_;}
+    inline int getFrom() const {return from_;}
+    inline int getTo() const {return to_;}
+    inline bool isPromote() const {return promote_;}
+    int pieceTypeToActionId(PieceType piece_type);
+    PieceType actionIdToPieceType(int index);
+
 private:
     ActionType type_;
     PieceType piece_type_;
@@ -90,6 +100,21 @@ public:
 
 private:
     Player eval() const;
+    Phase phase_;
+    Player winner_;
+    std::vector<Piece> board_;
+};
+
+class shogi66EnvLoader : public BaseBoardEnvLoader<shogi66Action, shogi66Env> {
+public:
+    std::vector<float> getActionFeatures(const int pos, utils::Rotation rotation = utils::Rotation::kRotationNone) const override {
+        return {};
+    }
+    inline std::vector<float> getValue(const int pos) const { return {getReturn()}; }
+    inline std::string name() const override { return kshogi66Name; }
+    inline int getPolicySize() const override { return kshogi66PolicySize; }
+    inline int getRotatePosition(int position, utils::Rotation rotation) const override { return position; };
+    inline int getRotateAction(int action_id, utils::Rotation rotation) const override { return action_id; };
 };
 
 } // namespace minizero::env::shogi66
