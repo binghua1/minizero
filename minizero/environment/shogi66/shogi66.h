@@ -6,13 +6,26 @@
 
 namespace minizero::env::shogi66{
 
-const std::string kshogi66Name = "shogi66";
-const int kshogi66NumPlayer = 2;
-const int kshogi66BoardSize = 6; // 66shogi
+constexpr std::string kshogi66Name = "shogi66";
+constexpr int kshogi66NumPlayer = 2;
+constexpr int kshogi66BoardSize = 6;
+constexpr int kshogi66BoardArea = kshogi66BoardSize * kshogi66BoardSize; // 36
+constexpr int kshogi66NumActionPieceTypes = 8;
+
+constexpr int kshogi66SetupActionSize = kshogi66NumActionPieceTypes * kshogi66BoardArea;
+constexpr int kshogi66MoveActionSize = kshogi66BoardArea * kshogi66BoardArea * 2; // 升
+constexpr int kshogi66DropActionSize = kshogi66NumActionPieceTypes * kshogi66BoardArea;
+constexpr int kshogi66PolicySize = kshogi66SetupActionSize + kshogi66MoveActionSize + kshogi66DropActionSize;
 
 enum class Phase {
     kSetup,
     kPlay,
+};
+
+enum class ActionType {
+    kSetup,
+    kMove,
+    kDrop,
 };
 
 enum class PieceType {
@@ -30,6 +43,23 @@ enum class PieceType {
 struct Piece {
     Player owner;
     PieceType type;
+
+    Piece(Player p = Player::kPlayerNone, PieceType t = PieceType::kEmpty) : owner(p), type(t) {}
+};
+
+class shogi66Action : public BaseBoardAction {
+public:
+    shogi66Action();
+    shogi66Action(int action_id, Player player);
+    shogi66Action(ActionType type, PieceType piece_type, int from, int to, bool promote, Player player);
+    shogi66Action(const std::vector<std::string>& action_string_args);
+
+private:
+    ActionType type_;
+    PieceType piece_type_;
+    int from_;
+    int to_;
+    bool promote_;
 };
 
 class shogi66Env : public BaseBoardEnv<shogi66Action> {
@@ -48,7 +78,7 @@ public:
     std::vector<float> getFeatures(utils::Rotation rotation = utils::Rotation::kRotationNone) const override;
     std::vector<float> getActionFeatures(const shogi66Action& action, utils::Rotation rotation = utils::Rotation::kRotationNone) const override;
     inline int getNumInputChannels() const override { return 4; }
-    inline int getPolicySize() const override { return getBoardSize() * getBoardSize(); }
+    inline int getPolicySize() const override { return kshogi66PolicySize; }
 
     std::string toString() const override;
     inline std::string name() const override { return kshogi66Name; }
