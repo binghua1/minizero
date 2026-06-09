@@ -3,10 +3,12 @@
 #include "base_env.h"
 #include <string>
 #include <vector>
+#include <array>
+
 
 namespace minizero::env::shogi66{
 
-constexpr std::string kshogi66Name = "shogi66";
+const std::string kshogi66Name = "shogi66";
 constexpr int kshogi66NumPlayer = 2;
 constexpr int kshogi66BoardSize = 6;
 constexpr int kshogi66BoardArea = kshogi66BoardSize * kshogi66BoardSize; // 36
@@ -16,6 +18,7 @@ constexpr int kshogi66SetupActionSize = kshogi66NumActionPieceTypes * kshogi66Bo
 constexpr int kshogi66MoveActionSize = kshogi66BoardArea * kshogi66BoardArea * 2; // 升
 constexpr int kshogi66DropActionSize = kshogi66NumActionPieceTypes * kshogi66BoardArea;
 constexpr int kshogi66PolicySize = kshogi66SetupActionSize + kshogi66MoveActionSize + kshogi66DropActionSize;
+using shogi66Hand = std::array<int, kshogi66NumActionPieceTypes>;
 
 enum class Phase {
     kSetup,
@@ -47,12 +50,11 @@ struct Piece {
     Piece(Player p = Player::kPlayerNone, PieceType t = PieceType::kEmpty) : owner(p), type(t) {}
 };
 
-class shogi66Action : public BaseBoardAction {
+class shogi66Action : public BaseBoardAction<kshogi66NumPlayer> {
 public:
     shogi66Action();
     shogi66Action(int action_id, Player player);
     shogi66Action(ActionType type, PieceType piece_type, int from, int to, bool promote, Player player);
-    shogi66Action(const std::vector<std::string>& action_string_args);
 
     std::string toConsoleString() const override;
 
@@ -103,6 +105,9 @@ private:
     Phase phase_;
     Player winner_;
     std::vector<Piece> board_;
+
+    bool repetition_draw;
+    GamePair<shogi66Hand> hand_;
 };
 
 class shogi66EnvLoader : public BaseBoardEnvLoader<shogi66Action, shogi66Env> {

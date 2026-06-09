@@ -102,7 +102,6 @@ typedef minizero::env::surakarta::SurakartaEnvLoader EnvironmentLoader;
 typedef minizero::env::tetrisblockpuzzle::TetrisBlockPuzzleAction Action;
 typedef minizero::env::tetrisblockpuzzle::TetrisBlockPuzzleEnv Environment;
 typedef minizero::env::tetrisblockpuzzle::TetrisBlockPuzzleEnvLoader EnvironmentLoader;
-#else
 #elif SHOGI66
 #include "shogi66.h"
 typedef minizero::env::shogi66::shogi66Action Action;
