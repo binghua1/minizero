@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 #include <array>
+#include <unordered_map>
 
 
 namespace minizero::env::shogi66{
@@ -55,6 +56,7 @@ public:
     shogi66Action();
     shogi66Action(int action_id, Player player);
     shogi66Action(ActionType type, PieceType piece_type, int from, int to, bool promote, Player player);
+    shogi66Action(const std::vector<std::string>& action_string_args);
 
     std::string toConsoleString() const override;
 
@@ -63,10 +65,12 @@ public:
     inline int getFrom() const {return from_;}
     inline int getTo() const {return to_;}
     inline bool isPromote() const {return promote_;}
-    int pieceTypeToActionId(PieceType piece_type);
-    PieceType actionIdToPieceType(int index);
+    static int pieceTypeToActionId(PieceType piece_type);
+    static PieceType actionIdToPieceType(int index);
+    static int encodeActionId(ActionType type, PieceType piece_type, int from, int to, bool promote);
 
 private:
+    void decodeActionId();
     ActionType type_;
     PieceType piece_type_;
     int from_;
@@ -108,6 +112,7 @@ private:
 
     bool repetition_draw;
     GamePair<shogi66Hand> hand_;
+    std::unordered_map<std::string, int> state_count_;
 };
 
 class shogi66EnvLoader : public BaseBoardEnvLoader<shogi66Action, shogi66Env> {

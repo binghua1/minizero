@@ -1,20 +1,187 @@
 #include "shogi66.h"
 #include <algorithm>
 #include <string>
+#include <sstream>
 
 namespace minizero::env::shogi66 {
 
 using namespace minizero::utils;
+namespace{
 
-shogi66Action::shogi66Action() : from_(-1), to_(-1), piece_type_(PieceType::kEmpty), promote_(false) {}
+int row(int pos) { return pos / kshogi66BoardSize; }
+int col(int pos) { return pos % kshogi66BoardSize; }
+bool inBoard(int pos) { return 0 <= pos && pos < kshogi66BoardArea; }
+int sign(int x) { return x == 0 ? 0 : (x > 0 ? 1 : -1); }
+int dir(Player p) { return p == Player::kPlayer1 ? 1 : -1; }
+bool isPlayer(Player p) { return p == Player::kPlayer1 || p == Player::kPlayer2; }
+bool isPromoted(PieceType type) {
+    return type == PieceType::kSilver || type == PieceType::kKnight || type == PieceType::kLance || type == PieceType::kRook || type == PieceType::kBishop || type == PieceType::kPawn;
+}
+bool isGoldLike(PieceType type) {
+    return type == PieceType::kGold || type == PieceType::kPromSilver || type == PieceType::kPromKnight || type == PieceType::kPromLance || type == PieceType::kTokin;
+}
 
-shogi66Action::shogi66Action(int action_id, Player player) : BaseBoardAction(action_id, player) {}
+PieceType promoted(PieceType type) {
+    switch(type) {
+        case PieceType::kSilver: return PieceType::kPromSilver;
+        case PieceType::kKnight: return PieceType::kPromKnight;
+        case PieceType::kLance: return PieceType::kPromLance;
+        case PieceType::kRook: return PieceType::kDragon;
+        case PieceType::kBishop: return PieceType::kHorse;
+        case PieceType::kPawn: return PieceType::kTokin;
+        default: return type;
+    }
+}
+
+PieceType unpromote(PieceType type) {
+    switch(type) {
+        case PieceType::kPromSilver: return PieceType::kSilver;
+        case PieceType::kPromKnight: return PieceType::kKnight;
+        case PieceType::kPromLance: return PieceType::kLance;
+        case PieceType::kDragon: return PieceType::kRook;
+        case PieceType::kHorse: return PieceType::kBishop;
+        case PieceType::kTokin: return PieceType::kPawn;
+        default: return type;
+    }
+}
+
+bool isPromotable(PieceType type) {
+    return promoted(type) != type;
+}
+
+std::string squareToString(int pos) {
+    return std::string(1, (char)('A' + col(pos))) + std::to_string(row(pos) + 1);
+}
+
+int stringToSquare(std::string& s) {
+    if(size(s) < 2) return -1;
+    if(s[0] == '+') s = s.substr(1);
+    int x = toupper(s[0]) - 'A', y = std::stoi(s.substr(1)) - 1;
+    if(x < 0 || x >= kshogi66BoardSize || y < 0 || y >= kshogi66BoardSize) return -1;
+    return y * kshogi66BoardSize + x;
+}
+
+std::string pieceToString(PieceType piece){
+    switch(piece) {
+        case PieceType::kKing: return "K";
+        case PieceType::kGold: return "G";
+        case PieceType::kSilver: return "S";
+        case PieceType::kPromSilver: return "+S";
+        case PieceType::kKnight: return "N";
+        case PieceType::kPromKnight: return "+N";
+        case PieceType::kLance: return "L";
+        case PieceType::kPromLance: return "+L";
+        case PieceType::kRook: return "R";
+        case PieceType::kDragon: return "+R";
+        case PieceType::kBishop: return "B";
+        case PieceType::kHorse: return "+B";
+        case PieceType::kPawn: return "P";
+        case PieceType::kTokin: return "+P";
+        default: return ".";
+    }
+}
+
+PieceType stringToPiece(std::string &s) {
+    if(s == "K") return PieceType::kKing;
+    if(s == "G") return PieceType::kGold;
+    if(s == "S") return PieceType::kSilver;
+    if(s == "+S") return PieceType::kPromSilver;
+    if(s == "N") return PieceType::kKnight;
+    if(s == "+N") return PieceType::kPromKnight;
+    if(s == "L") return PieceType::kLance;
+    if(s == "+L") return PieceType::kPromLance;
+    if(s == "R") return PieceType::kRook;
+    if(s == "+R") return PieceType::kDragon;
+    if(s == "B") return PieceType::kBishop;
+    if(s == "+B") return PieceType::kHorse;
+    if(s == "P") return PieceType::kPawn;
+    if(s == "+P") return PieceType::kTokin;
+    return PieceType::kEmpty;
+}
+}; // namespace
+
+shogi66Action::shogi66Action() : BaseBoardAction(-1, Player::kPlayerNone), type_(ActionType::kMove), piece_type_(PieceType::kEmpty), from_(-1), to_(-1), promote_(false) {}
+
+shogi66Action::shogi66Action(int action_id, Player player) : BaseBoardAction(action_id, player), type_(ActionType::kMove), piece_type_(PieceType::kEmpty), from_(-1), to_(-1), promote_(false) {
+    decodeActionId();
+}
 
 shogi66Action::shogi66Action(ActionType type, PieceType piece_type, int from, int to, bool promote, Player player) 
     : BaseBoardAction(-1, player), type_(type), piece_type_(piece_type), from_(from), to_(to), promote_(promote) {}
-    
-shogi66Action::shogi66Action(const std::vector<std::string>& action_string_args) : BaseBoardAction(-1, Player::kPlayerNone) {
-    ;
+
+shogi66Action::shogi66Action(const std::vector<std::string>& action_string_args) : shogi66Action() {
+
+}
+
+int pieceTypeToActionId(PieceType piece_type) {
+    switch(piece_type) {
+        case PieceType::kKing: return 0;
+        case PieceType::kGold: return 1;
+        case PieceType::kSilver: return 2;
+        case PieceType::kKnight: return 3;
+        case PieceType::kLance: return 4;
+        case PieceType::kRook: return 5;
+        case PieceType::kBishop: return 6;
+        case PieceType::kPawn: return 7;
+        default: return -1;
+    }
+}
+
+int shogi66Action::encodeActionId(ActionType type, PieceType piece_type, int from, int to, bool promote) {
+    if(type == ActionType::kSetup) { // 1
+        int id = pieceTypeToActionId(piece_type);
+        return id < 0 || !inBoard(to) ? -1 : id * kshogi66BoardArea + to;
+    }else if(type == ActionType::kMove) {
+        return !inBoard(from) || !inBoard(to) ? -1 : kshogi66SetupActionSize + ((from * kshogi66BoardArea + to) * 2 + (int)(promote));
+    }else if(type == ActionType::kDrop) {
+        int id = pieceTypeToActionId(piece_type);
+        return id < 0 || !inBoard(to) ? -1 : kshogi66SetupActionSize + kshogi66MoveActionSize + id * kshogi66BoardArea + to;
+    }
+    return -1;
+}
+
+void shogi66Action::decodeActionId() {
+    int id = action_id_;
+    if(0 <= id && id < kshogi66SetupActionSize) {
+        type_ = ActionType::kSetup;
+        piece_type_ = actionIdToPieceType(id / kshogi66BoardArea);
+        from_ = -1;
+        to_ = id % kshogi66BoardArea;
+        promote_ = false;
+    }else if(kshogi66SetupActionSize <= id && id < kshogi66SetupActionSize + kshogi66MoveActionSize) {
+        id -= kshogi66SetupActionSize;
+        type_ = ActionType::kMove;
+        promote_ = (id % 2) != 0;
+        id >>= 1;
+        from_ = id / kshogi66BoardArea;
+        to_ = id % kshogi66BoardArea;
+        piece_type_ = PieceType::kEmpty;
+    }else if(kshogi66SetupActionSize + kshogi66MoveActionSize <= id && id < kshogi66PolicySize) {
+        id -= kshogi66SetupActionSize + kshogi66MoveActionSize;
+        type_ = ActionType::kDrop;
+        piece_type_ = actionIdToPieceType(id / kshogi66BoardArea);
+        from_ = -1;
+        to_ = id % kshogi66BoardArea;
+        promote_ = false;
+    }
+}
+
+static PieceType actionIdToPieceType(int index) {
+    switch(index) {
+        case 0: return PieceType::kKing;
+        case 1: return PieceType::kGold;
+        case 2: return PieceType::kSilver;
+        case 3: return PieceType::kKnight;
+        case 4: return PieceType::kLance;
+        case 5: return PieceType::kRook;
+        case 6: return PieceType::kBishop;
+        case 7: return PieceType::kPawn;
+        default: return PieceType::kEmpty;
+    } 
+}
+
+std::string shogi66Action::toConsoleString() const {
+    if()
 }
     
 void shogi66Env::reset(){
