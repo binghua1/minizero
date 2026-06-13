@@ -143,6 +143,7 @@ shogi66Action::shogi66Action(const std::vector<std::string>& action_string_args)
         from_ = stringToSquare(s.substr(0, 2));
         to_ = stringToSquare(s.substr(2, 2));
     }
+    action_id_ = encodeActionId(type_, piece_type_, from_, to_, promote_);
 }
 
 int shogi66Action::setupPieceToActionId(PieceType piece_type)
@@ -263,14 +264,22 @@ std::string shogi66Action::toConsoleString() const
 
 void shogi66Env::reset()
 {
-    turn_ = Player::kPlayer1; // random?
+    turn_ = Player::kPlayer1;
     phase_ = Phase::kSetup;
     winner_ = Player::kPlayerNone;
     board_.assign(kshogi66BoardArea, Piece());
+    repetition_draw = false;
+    state_count_.clear();
+    hand_.reset();
+    setup_pool_.reset();
 
     actions_.clear();
     observations_.clear();
 
+    for (auto p : {Player::kPlayer1, Player::kPlayer2}) {
+        hand_.get(p).fill(0);
+        setup_pool_.get(p).fill(1);
+    }
     for (int i = 0; i < kshogi66BoardSize; i++) {
         board_[1 * kshogi66BoardSize + i] = Piece(Player::kPlayer1, PieceType::kPawn);
         board_[4 * kshogi66BoardSize + i] = Piece(Player::kPlayer2, PieceType::kPawn);
@@ -282,7 +291,6 @@ bool shogi66Env::act(const shogi66Action& action)
     if (!isLegalAction(action)) return false;
 
     actions_.push_back(action);
-    return true;
 }
 
 bool shogi66Env::act(const std::vector<std::string>& args)
