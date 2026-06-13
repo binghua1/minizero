@@ -254,7 +254,7 @@ std::string shogi66Action::toConsoleString() const
     Drop: piece + "*" + to
     */
     if (type_ == ActionType::kSetup) {
-        return "S " + pieceToString(piece_type_) + "$" + squareToString(to_);
+        return "S:" + pieceToString(piece_type_) + "$" + squareToString(to_);
     } else if (type_ == ActionType::kDrop) {
         return pieceToString(piece_type_) + "*" + squareToString(to_);
     } else { // Move
@@ -626,7 +626,7 @@ std::string shogi66Env::toString() const
 {
     std::ostringstream oss;
     oss << (phase_ == Phase::kSetup ? "setup" : "play") << playerToChar(turn_) << "\n";
-    oss << "    A  B   C   D   E   F\n";
+    oss << "    A   B   C   D   E   F\n";
     for (int r = kshogi66BoardSize - 1; r >= 0; r--) {
         oss << r + 1 << " ";
         for (int c = 0; c < kshogi66BoardSize; c++) {
@@ -642,7 +642,7 @@ std::string shogi66Env::toString() const
         }
         oss << " " << r + 1 << "\n";
     }
-    oss << "    A  B   C   D   E   F\n";
+    oss << "    A   B   C   D   E   F\n";
     for (Player p : {Player::kPlayer1, Player::kPlayer2}) {
         oss << (p == Player::kPlayer1 ? "P1" : "P2") << " hand: ";
         for (int piece = 0; piece < kshogi66HandPieceTypes; piece++) {
