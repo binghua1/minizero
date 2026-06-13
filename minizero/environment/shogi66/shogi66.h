@@ -102,7 +102,7 @@ public:
     float getEvalScore(bool is_resign = false) const override;
     std::vector<float> getFeatures(utils::Rotation rotation = utils::Rotation::kRotationNone) const override;
     std::vector<float> getActionFeatures(const shogi66Action& action, utils::Rotation rotation = utils::Rotation::kRotationNone) const override;
-    inline int getNumInputChannels() const override { return 4; }
+    inline int getNumInputChannels() const override { return 44; }
     inline int getPolicySize() const override { return kshogi66PolicySize; }
 
     std::string toString() const override;
@@ -110,13 +110,13 @@ public:
     inline int getNumPlayer() const override { return kshogi66NumPlayer; }
 
     inline int getRotatePosition(int position, utils::Rotation rotation) const override { return utils::getPositionByRotating(rotation, position, getBoardSize()); };
-    inline int getRotateAction(int action_id, utils::Rotation rotation) const override { return getRotatePosition(action_id, rotation); };
+    inline int getRotateAction(int action_id, utils::Rotation rotation) const override { return action_id; };
     static void setUpEnv() { config::env_board_size = kshogi66BoardSize; }
 
 private:
     bool isLegalSetupAction(const shogi66Action& action) const;
-    bool isPseudoLegalMove(const shogi66Action& action) const;
-    bool isPseudoLegalDrop(const shogi66Action& action) const;
+    bool isLegalMove(const shogi66Action& action) const;
+    bool isLegalDrop(const shogi66Action& action) const;
     bool attacksSquare(int from, int to) const;
     bool isKingInCheck(Player player) const;
     bool isPawnDropMate(const shogi66Action& action) const;
@@ -128,12 +128,13 @@ private:
     std::string stateKey() const;
     std::vector<shogi66Action> getLegalActions(bool check_pawn_drop_mate) const;
     bool isLegalAction(const shogi66Action& action, bool check_pawn_drop_mate) const;
+    Player winnerByMissingKing() const;
 
     Phase phase_;
     Player winner_;
     std::vector<Piece> board_;
 
-    bool repetition_draw;
+    bool repetition_draw_;
     GamePair<shogi66Hand> hand_;
     GamePair<shogi66SetupPool> setup_pool_;
     std::unordered_map<std::string, int> state_count_;
@@ -141,11 +142,8 @@ private:
 
 class shogi66EnvLoader : public BaseBoardEnvLoader<shogi66Action, shogi66Env> {
 public:
-    std::vector<float> getActionFeatures(const int pos, utils::Rotation rotation = utils::Rotation::kRotationNone) const override
-    {
-        return {};
-    }
-    inline std::vector<float> getValue(const int pos) const { return {getReturn()}; }
+    std::vector<float> getActionFeatures(const int pos, utils::Rotation rotation = utils::Rotation::kRotationNone) const override;
+    inline std::vector<float> getValue(const int pos) const override { return {getReturn()}; }
     inline std::string name() const override { return kshogi66Name; }
     inline int getPolicySize() const override { return kshogi66PolicySize; }
     inline int getRotatePosition(int position, utils::Rotation rotation) const override { return position; };
