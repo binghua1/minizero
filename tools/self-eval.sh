@@ -99,7 +99,11 @@ function run_twogtp(){
         KOMI=7
     fi
     echo "GPUID: $1, Current players: ${3:12:-3} vs. ${2:12:-3}, Game num $GAMENUM"
-    CUDA_VISIBLE_DEVICES=$1 gogui-twogtp -black "$BLACK" -white "$WHITE" -games $GAMENUM -sgffile $SGFFILE -alternate -auto -size $BOARD_SIZE -komi $KOMI -threads $num_threads
+    if [[ $GAME_TYPE == shogi66 ]]; then
+        CUDA_VISIBLE_DEVICES=$1 tools/minizero-twogtp.py -black "$BLACK" -white "$WHITE" -games $GAMENUM -sgffile $SGFFILE -alternate -threads $num_threads
+    else
+        CUDA_VISIBLE_DEVICES=$1 gogui-twogtp -black "$BLACK" -white "$WHITE" -games $GAMENUM -sgffile $SGFFILE -alternate -auto -size $BOARD_SIZE -komi $KOMI -threads $num_threads
+    fi
 }
 function run_gpu(){
     models=($(ls $FOLDER/model | grep ".pt$" | sort -V))
