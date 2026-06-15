@@ -25,6 +25,7 @@ target_include_directories(
     surakarta
     tictactoe
     stochastic
+    shogi66
     stochastic/puzzle2048
     stochastic/tetrisblockpuzzle
 )
