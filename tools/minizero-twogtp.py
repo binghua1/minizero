@@ -149,7 +149,7 @@ def main():
     parser.add_argument("-sgffile", required=True)
     parser.add_argument("-alternate", action="store_true")
     parser.add_argument("-threads", type=int, default=1)
-    parser.add_argument("-max_moves", type=int, default=512)
+    parser.add_argument("-max_moves", type=int, default=2048)
     args = parser.parse_args()
 
     dat_path = args.sgffile + ".dat"
