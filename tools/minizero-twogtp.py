@@ -2,7 +2,9 @@
 
 import argparse
 import os
+import queue
 import subprocess
+import threading
 
 
 class Engine:
@@ -76,6 +78,27 @@ def write_sgf(path, result, moves):
         fout.write(")\n")
 
 
+def dat_line(game_id, result, alternate, err="0", err_msg=""):
+    # dat columns are shaped like gogui-twogtp output enough for tools/eval.py:
+    # 0 GAME, 1 RES_B, 2 RES_W, 3 RES_R, 4 ALT, 5 DUP, 11 ERR, 12 ERR_MSG
+    fields = [
+        str(game_id),
+        f"{result:.6f}",
+        f"{-result:.6f}",
+        f"{result:.6f}",
+        "1" if alternate else "0",
+        "-",
+        "-",
+        "-",
+        "-",
+        "-",
+        "-",
+        err,
+        err_msg,
+    ]
+    return "\t".join(fields)
+
+
 def play_one_game(black_engine, white_engine, game_id, alternate, max_moves):
     engines = {"b": black_engine, "w": white_engine}
     for engine in set(engines.values()):
@@ -121,24 +144,47 @@ def play_one_game(black_engine, white_engine, game_id, alternate, max_moves):
         err_msg = f"reached max moves {max_moves}; adjudicate draw"
         result = 0.0
 
-    # dat columns are shaped like gogui-twogtp output enough for tools/eval.py:
-    # 0 GAME, 1 RES_B, 2 RES_W, 3 RES_R, 4 ALT, 5 DUP, 11 ERR, 12 ERR_MSG
-    fields = [
-        str(game_id),
-        f"{result:.6f}",
-        f"{-result:.6f}",
-        f"{result:.6f}",
-        "1" if alternate else "0",
-        "-",
-        "-",
-        "-",
-        "-",
-        "-",
-        "-",
-        err,
-        err_msg,
-    ]
-    return result, moves, "\t".join(fields)
+    return result, moves, dat_line(game_id, result, alternate, err, err_msg)
+
+
+def run_games_worker(worker_id, args, games, dat, write_lock):
+    black = Engine(args.black)
+    white = Engine(args.white)
+    try:
+        while True:
+            try:
+                game_id = games.get_nowait()
+            except queue.Empty:
+                return
+
+            alternate = args.alternate and (game_id % 2 == 1)
+            if alternate:
+                black_engine, white_engine = white, black
+            else:
+                black_engine, white_engine = black, white
+
+            try:
+                result, moves, line = play_one_game(
+                    black_engine, white_engine, game_id, alternate, args.max_moves
+                )
+            except Exception as exc:
+                result = 0.0
+                moves = []
+                line = dat_line(game_id, result, alternate, "1", str(exc))
+
+            write_sgf(f"{args.sgffile}-{game_id}.sgf", result, moves)
+            with write_lock:
+                dat.write(line + "\n")
+                dat.flush()
+                print(
+                    f"thread {worker_id}: game {game_id + 1}/{args.games}: "
+                    f"{'alternate ' if alternate else ''}RE={result:.6f}",
+                    flush=True,
+                )
+            games.task_done()
+    finally:
+        black.close()
+        white.close()
 
 
 def main():
@@ -148,7 +194,7 @@ def main():
     parser.add_argument("-games", type=int, required=True)
     parser.add_argument("-sgffile", required=True)
     parser.add_argument("-alternate", action="store_true")
-    parser.add_argument("-threads", type=int, default=1)
+    parser.add_argument("-threads", type=int, default=2)
     parser.add_argument("-max_moves", type=int, default=2048)
     args = parser.parse_args()
 
@@ -158,8 +204,6 @@ def main():
     with open(lock_path, "w") as fout:
         fout.write(str(os.getpid()))
 
-    black = Engine(args.black)
-    white = Engine(args.white)
     try:
         with open(dat_path, "w") as dat:
             dat.write(f"BlackCommand {args.black}\n")
@@ -167,27 +211,25 @@ def main():
             dat.write("ERR_MSG\n")
             dat.flush()
 
+            games = queue.Queue()
             for game_id in range(args.games):
-                alternate = args.alternate and (game_id % 2 == 1)
-                if alternate:
-                    black_engine, white_engine = white, black
-                else:
-                    black_engine, white_engine = black, white
+                games.put(game_id)
 
-                result, moves, dat_line = play_one_game(
-                    black_engine, white_engine, game_id, alternate, args.max_moves
+            write_lock = threading.Lock()
+            num_threads = max(1, min(args.threads, args.games))
+            threads = [
+                threading.Thread(
+                    target=run_games_worker,
+                    args=(worker_id, args, games, dat, write_lock),
+                    daemon=True,
                 )
-                dat.write(dat_line + "\n")
-                dat.flush()
-                write_sgf(f"{args.sgffile}-{game_id}.sgf", result, moves)
-                print(
-                    f"game {game_id + 1}/{args.games}: "
-                    f"{'alternate ' if alternate else ''}RE={result:.6f}",
-                    flush=True,
-                )
+                for worker_id in range(num_threads)
+            ]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
     finally:
-        black.close()
-        white.close()
         try:
             os.remove(lock_path)
         except FileNotFoundError:
