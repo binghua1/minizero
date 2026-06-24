@@ -398,6 +398,7 @@ bool shogi66Env::isLegalMove(const shogi66Action& action) const
 
 bool shogi66Env::isLegalDrop(const shogi66Action& action) const
 {
+    if (isPromoted(action.getPieceType())) return false;
     int id = shogi66Action::handPieceToActionId(action.getPieceType());
     int to = action.getTo();
     if (id < 0 || hand_.get(turn_)[id] <= 0) return false;
