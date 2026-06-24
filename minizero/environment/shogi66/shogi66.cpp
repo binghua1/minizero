@@ -361,7 +361,7 @@ bool shogi66Env::isLegalAction(const shogi66Action& action, bool check_pawn_drop
     shogi66Env nxt = *this;
     nxt.applyActionNoCheck(action);
     if (nxt.isKingInCheck(turn_)) return false;
-    if (check_pawn_drop_mate && action.getType() == ActionType::kDrop && action.getPieceType() == PieceType::kPawn && nxt.isPawnDropMate(action)) return false;
+    if (check_pawn_drop_mate && action.getType() == ActionType::kDrop && action.getPieceType() == PieceType::kPawn && isPawnDropMate(action)) return false;
     return true;
 }
 
