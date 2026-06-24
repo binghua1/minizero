@@ -384,6 +384,7 @@ bool shogi66Env::isLegalMove(const shogi66Action& action) const
     int from = action.getFrom(), to = action.getTo();
     if (!inBoard(from) || !inBoard(to) || from == to) return false;
     if (board_[from].owner != turn_ || board_[to].owner == turn_) return false;
+    if (board_[to].type == PieceType::kKing) return false;
     PieceType type = board_[from].type;
     if (action.isPromote()) {
         if (!isPromotable(type) || isPromoted(type) || !canPromote(turn_, from, to, type)) {
@@ -457,7 +458,7 @@ bool shogi66Env::attacksSquare(int from, int to) const
             return (dr == 0 || dc == 0) && check_line() || (std::abs(dr) == std::abs(dc) && std::abs(dr) == 1);
         case PieceType::kHorse:
             return (std::abs(dr) == std::abs(dc) && check_line()) ||
-                   ((std::abs(dr) == 0 && dc == 0) || (dr == 0 && std::abs(dc) == 1));
+                   ((std::abs(dr) == 1 && dc == 0) || (dr == 0 && std::abs(dc) == 1));
         case PieceType::kPawn:
             return dr == forward && dc == 0;
         default:
@@ -603,8 +604,8 @@ std::vector<float> shogi66Env::getFeatures(utils::Rotation rotation) const
     }
     for (int i = 0; i < kshogi66HandPieceTypes; i++) {
         for (int pos = 0; pos < spatial; pos++) {
-            features[(28 + i) * spatial + pos] = hand_.get(turn_)[i] > 0 ? 1.0f : 0.0f;
-            features[(35 + i) * spatial + pos] = hand_.get(nxt_player)[i] > 0 ? 1.0f : 0.0f;
+            features[(28 + i) * spatial + pos] = static_cast<float>(hand_.get(turn_)[i]);
+            features[(35 + i) * spatial + pos] = static_cast<float>(hand_.get(nxt_player)[i]);
         }
     }
     for (int pos = 0; pos < spatial; pos++) {
