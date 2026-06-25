@@ -605,8 +605,8 @@ std::vector<float> shogi66Env::getFeatures(utils::Rotation rotation) const
     }
     for (int i = 0; i < kshogi66HandPieceTypes; i++) {
         for (int pos = 0; pos < spatial; pos++) {
-            features[(28 + i) * spatial + pos] = static_cast<float>(hand_.get(turn_)[i]);
-            features[(35 + i) * spatial + pos] = static_cast<float>(hand_.get(nxt_player)[i]);
+            features[(28 + i) * spatial + pos] = hand_.get(turn_)[i] > 0 ? 1.0f : 0.0f;
+            features[(35 + i) * spatial + pos] = hand_.get(nxt_player)[i] > 0 ? 1.0f : 0.0f;
         }
     }
     for (int pos = 0; pos < spatial; pos++) {
