@@ -108,6 +108,8 @@ public:
     std::string toString() const override;
     inline std::string name() const override { return kshogi66Name; }
     inline int getNumPlayer() const override { return kshogi66NumPlayer; }
+    inline bool isSetupPhase() const { return phase_ == Phase::kSetup; }
+    inline bool isPlayPhase() const { return phase_ == Phase::kPlay; }
 
     inline int getRotatePosition(int position, utils::Rotation rotation) const override { return utils::getPositionByRotating(rotation, position, getBoardSize()); };
     inline int getRotateAction(int action_id, utils::Rotation rotation) const override { return action_id; };

@@ -25,6 +25,8 @@ bool actor_select_action_softmax_temperature_decay = false;
 bool actor_use_random_rotation_features = true;
 bool actor_use_dirichlet_noise = true;
 float actor_dirichlet_noise_alpha = 0.03f;
+float actor_dirichlet_noise_alpha_setup = -1.0f;
+float actor_dirichlet_noise_alpha_play = -1.0f;
 float actor_dirichlet_noise_epsilon = 0.25f;
 bool actor_use_gumbel = false;
 bool actor_use_gumbel_noise = false;
@@ -112,6 +114,8 @@ void setConfiguration(ConfigureLoader& cl)
     cl.addParameter("actor_use_random_rotation_features", actor_use_random_rotation_features, "true for randomly rotating input features; only supports in alphazero", "Actor");
     cl.addParameter("actor_use_dirichlet_noise", actor_use_dirichlet_noise, "true for adding dirchlet noise to the policy", "Actor");                                          // ref: AZ, Sec. Methods
     cl.addParameter("actor_dirichlet_noise_alpha", actor_dirichlet_noise_alpha, "hyperparameter for dirchlet noise, usually (1 / sqrt(number of actions))", "Actor");          // ref: AZ, Sec. Methods
+    cl.addParameter("actor_dirichlet_noise_alpha_setup", actor_dirichlet_noise_alpha_setup, "dirichlet noise alpha in the setup phase; <= 0 falls back to actor_dirichlet_noise_alpha", "Actor");
+    cl.addParameter("actor_dirichlet_noise_alpha_play", actor_dirichlet_noise_alpha_play, "dirichlet noise alpha in the play phase; <= 0 falls back to actor_dirichlet_noise_alpha", "Actor");
     cl.addParameter("actor_dirichlet_noise_epsilon", actor_dirichlet_noise_epsilon, "hyperparameter for dirchlet noise", "Actor");                                             // ref: AZ, Sec. Methods
     cl.addParameter("actor_use_gumbel", actor_use_gumbel, "true for enabling Gumbel Zero", "Actor");                                                                           // ref: GZ, Sec. 3
     cl.addParameter("actor_use_gumbel_noise", actor_use_gumbel_noise, "true for adding Gumbel noise to the policy", "Actor");                                                  // ref: GZ, Sec. 3

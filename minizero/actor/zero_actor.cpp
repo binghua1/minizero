@@ -195,8 +195,16 @@ void ZeroActor::addNoiseToNodeChildren(MCTSNode* node)
 {
     assert(node && node->getNumChildren() > 0);
     if (config::actor_use_dirichlet_noise) {
+        float alpha = config::actor_dirichlet_noise_alpha;
         const float epsilon = config::actor_dirichlet_noise_epsilon;
-        std::vector<float> dirichlet_noise = utils::Random::randDirichlet(config::actor_dirichlet_noise_alpha, node->getNumChildren());
+#if SHOGI66
+        if (env_.isSetupPhase() && config::actor_dirichlet_noise_alpha_setup > 0) {
+            alpha = config::actor_dirichlet_noise_alpha_setup;
+        } else if (env_.isPlayPhase() && config::actor_dirichlet_noise_alpha_play > 0) {
+            alpha = config::actor_dirichlet_noise_alpha_play;
+        }
+#endif
+        std::vector<float> dirichlet_noise = utils::Random::randDirichlet(alpha, node->getNumChildren());
         for (int i = 0; i < node->getNumChildren(); ++i) {
             MCTSNode* child = node->getChild(i);
             child->setPolicyNoise(dirichlet_noise[i]);
