@@ -216,10 +216,8 @@ std::vector<MCTS::ActionCandidate> ZeroActor::calculateAlphaZeroActionPolicy(con
 {
     assert(alphazero_network_);
     std::vector<MCTS::ActionCandidate> action_candidates;
-    for (size_t action_id = 0; action_id < alphazero_output->policy_.size(); ++action_id) {
-        Action action(action_id, env_transition.getTurn());
-        if (!env_transition.isLegalAction(action)) { continue; }
-        int rotated_id = env_transition.getRotateAction(action_id, rotation);
+    for (const Action& action : env_transition.getLegalActions()) {
+        int rotated_id = env_transition.getRotateAction(action.getActionID(), rotation);
         action_candidates.push_back(MCTS::ActionCandidate(action, alphazero_output->policy_[rotated_id], alphazero_output->policy_logits_[rotated_id]));
     }
     sort(action_candidates.begin(), action_candidates.end(), [](const MCTS::ActionCandidate& lhs, const MCTS::ActionCandidate& rhs) {

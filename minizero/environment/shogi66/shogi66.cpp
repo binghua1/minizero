@@ -1,7 +1,9 @@
 #include "shogi66.h"
 #include <algorithm>
+#include <cassert>
 #include <sstream>
 #include <string>
+#include <utility>
 
 namespace minizero::env::shogi66 {
 
@@ -53,6 +55,130 @@ namespace {
     {
         return promoted(type) != type;
     }
+
+struct EncodedMove {
+    int from;
+    int to;
+    bool promote;
+};
+
+bool isPotentialMove(int from, int to)
+{
+    if (!inBoard(from) || !inBoard(to) || from == to) return false;
+    int dr = row(to) - row(from);
+    int dc = col(to) - col(from);
+    int adr = std::abs(dr);
+    int adc = std::abs(dc);
+    return dr == 0 || dc == 0 || adr == adc || (adr == 2 && adc == 1);
+}
+
+bool isPotentialPromotion(int from, int to)
+{
+    auto in_promotion_zone = [](int pos) {
+        int r = row(pos);
+        return r <= 1 || r >= kshogi66BoardSize - 2;
+    };
+    return in_promotion_zone(from) || in_promotion_zone(to);
+}
+
+int moveKey(int from, int to, bool promote)
+{
+    return ((from * kshogi66BoardArea + to) << 1) + static_cast<int>(promote);
+}
+
+int toRelativePosition(int pos, Player player)
+{
+    if (!inBoard(pos)) return -1;
+    if (player == Player::kPlayer2) { return (kshogi66BoardSize - 1 - row(pos)) * kshogi66BoardSize + col(pos); }
+    return pos;
+}
+
+int fromRelativePosition(int pos, Player player)
+{
+    return toRelativePosition(pos, player);
+}
+
+int dropKey(PieceType piece_type, int relative_to)
+{
+    return shogi66Action::handPieceToActionId(piece_type) * kshogi66BoardArea + relative_to;
+}
+
+struct EncodedDrop {
+    PieceType piece_type;
+    int relative_to;
+};
+
+bool isPotentialDrop(PieceType piece_type, int relative_to)
+{
+    if (!inBoard(relative_to)) return false;
+    int r = row(relative_to);
+    if ((piece_type == PieceType::kPawn || piece_type == PieceType::kLance) && r == kshogi66BoardSize - 1) return false;
+    if (piece_type == PieceType::kKnight && r >= kshogi66BoardSize - 2) return false;
+    return true;
+}
+
+const std::vector<EncodedMove>& getEncodedMoves()
+{
+    static const std::vector<EncodedMove> moves = [] {
+        std::vector<EncodedMove> ret;
+        ret.reserve(kshogi66MoveActionSize);
+        for (int from = 0; from < kshogi66BoardArea; ++from) {
+            for (int to = 0; to < kshogi66BoardArea; ++to) {
+                if (!isPotentialMove(from, to)) continue;
+                ret.push_back({from, to, false});
+                if (isPotentialPromotion(from, to)) { ret.push_back({from, to, true}); }
+            }
+        }
+        assert(static_cast<int>(ret.size()) == kshogi66MoveActionSize);
+        return ret;
+    }();
+    return moves;
+}
+
+const std::unordered_map<int, int>& getEncodedMoveIndex()
+{
+    static const std::unordered_map<int, int> index = [] {
+        std::unordered_map<int, int> ret;
+        const auto& moves = getEncodedMoves();
+        ret.reserve(moves.size());
+        for (int i = 0; i < static_cast<int>(moves.size()); ++i) {
+            ret[moveKey(moves[i].from, moves[i].to, moves[i].promote)] = i;
+        }
+        return ret;
+    }();
+    return index;
+}
+
+const std::vector<EncodedDrop>& getEncodedDrops()
+{
+    static const std::vector<EncodedDrop> drops = [] {
+        std::vector<EncodedDrop> ret;
+        ret.reserve(kshogi66DropActionSize);
+        for (int piece = 0; piece < kshogi66HandPieceTypes; ++piece) {
+            PieceType type = shogi66Action::handActionIdToPieceType(piece);
+            for (int relative_to = 0; relative_to < kshogi66BoardArea; ++relative_to) {
+                if (isPotentialDrop(type, relative_to)) { ret.push_back({type, relative_to}); }
+            }
+        }
+        assert(static_cast<int>(ret.size()) == kshogi66DropActionSize);
+        return ret;
+    }();
+    return drops;
+}
+
+const std::unordered_map<int, int>& getEncodedDropIndex()
+{
+    static const std::unordered_map<int, int> index = [] {
+        std::unordered_map<int, int> ret;
+        const auto& drops = getEncodedDrops();
+        ret.reserve(drops.size());
+        for (int i = 0; i < static_cast<int>(drops.size()); ++i) {
+            ret[dropKey(drops[i].piece_type, drops[i].relative_to)] = i;
+        }
+        return ret;
+    }();
+    return index;
+}
 
     std::string squareToString(int pos)
     {
@@ -117,7 +243,7 @@ shogi66Action::shogi66Action(int action_id, Player player) : BaseBoardAction<ksh
 }
 
 shogi66Action::shogi66Action(ActionType type, PieceType piece_type, int from, int to, bool promote, Player player)
-    : BaseBoardAction<kshogi66NumPlayer>(encodeActionId(type, piece_type, from, to, promote), player), // id, player
+    : BaseBoardAction<kshogi66NumPlayer>(encodeActionId(type, piece_type, from, to, promote, player), player), // id, player
       type_(type), piece_type_(piece_type), from_(from), to_(to), promote_(promote)
 {
 }
@@ -143,7 +269,7 @@ shogi66Action::shogi66Action(const std::vector<std::string>& action_string_args)
         from_ = stringToSquare(s.substr(0, 2));
         to_ = stringToSquare(s.substr(2, 2));
     }
-    action_id_ = encodeActionId(type_, piece_type_, from_, to_, promote_);
+    action_id_ = encodeActionId(type_, piece_type_, from_, to_, promote_, player_);
 }
 
 int shogi66Action::setupPieceToActionId(PieceType piece_type)
@@ -190,16 +316,19 @@ PieceType shogi66Action::handActionIdToPieceType(int index)
     return 0 <= index && index < kshogi66HandPieceTypes ? pieces[index] : PieceType::kEmpty;
 }
 
-int shogi66Action::encodeActionId(ActionType type, PieceType piece_type, int from, int to, bool promote)
+int shogi66Action::encodeActionId(ActionType type, PieceType piece_type, int from, int to, bool promote, Player player)
 {
     if (type == ActionType::kSetup) { // 1
         int id = setupPieceToActionId(piece_type);
-        return id < 0 || !inBoard(to) ? -1 : id * kshogi66BoardArea + to;
+        int relative_to = toRelativePosition(to, player);
+        return id < 0 || !inBoard(relative_to) || row(relative_to) != 0 ? -1 : id * kshogi66BoardSize + col(relative_to);
     } else if (type == ActionType::kMove) {
-        return !inBoard(from) || !inBoard(to) ? -1 : kshogi66SetupActionSize + ((from * kshogi66BoardArea + to) * 2 + static_cast<int>(promote));
+        auto it = getEncodedMoveIndex().find(moveKey(from, to, promote));
+        return it == getEncodedMoveIndex().end() ? -1 : kshogi66SetupActionSize + it->second;
     } else if (type == ActionType::kDrop) {
-        int id = handPieceToActionId(piece_type);
-        return id < 0 || !inBoard(to) ? -1 : kshogi66SetupActionSize + kshogi66MoveActionSize + id * kshogi66BoardArea + to;
+        int relative_to = toRelativePosition(to, player);
+        auto it = getEncodedDropIndex().find(dropKey(piece_type, relative_to));
+        return it == getEncodedDropIndex().end() ? -1 : kshogi66SetupActionSize + kshogi66MoveActionSize + it->second;
     }
     return -1;
 }
@@ -209,24 +338,25 @@ void shogi66Action::decodeActionId()
     int id = action_id_;
     if (0 <= id && id < kshogi66SetupActionSize) {
         type_ = ActionType::kSetup;
-        piece_type_ = setupActionIdToPieceType(id / kshogi66BoardArea);
+        piece_type_ = setupActionIdToPieceType(id / kshogi66BoardSize);
         from_ = -1;
-        to_ = id % kshogi66BoardArea;
+        to_ = fromRelativePosition(id % kshogi66BoardSize, player_);
         promote_ = false;
     } else if (kshogi66SetupActionSize <= id && id < kshogi66SetupActionSize + kshogi66MoveActionSize) {
         id -= kshogi66SetupActionSize;
+        const EncodedMove& move = getEncodedMoves()[id];
         type_ = ActionType::kMove;
-        promote_ = (id % 2) != 0;
-        id >>= 1;
-        from_ = id / kshogi66BoardArea;
-        to_ = id % kshogi66BoardArea;
+        promote_ = move.promote;
+        from_ = move.from;
+        to_ = move.to;
         piece_type_ = PieceType::kEmpty;
     } else if (kshogi66SetupActionSize + kshogi66MoveActionSize <= id && id < kshogi66PolicySize) {
         id -= kshogi66SetupActionSize + kshogi66MoveActionSize;
+        const EncodedDrop& drop = getEncodedDrops()[id];
         type_ = ActionType::kDrop;
-        piece_type_ = handActionIdToPieceType(id / kshogi66BoardArea);
+        piece_type_ = drop.piece_type;
         from_ = -1;
-        to_ = id % kshogi66BoardArea;
+        to_ = fromRelativePosition(drop.relative_to, player_);
         promote_ = false;
     }
 }
@@ -314,36 +444,35 @@ std::vector<shogi66Action> shogi66Env::getLegalActions() const
 
 std::vector<shogi66Action> shogi66Env::getLegalActions(bool check_pawn_drop_mate) const
 {
+    static thread_local std::unordered_map<std::string, std::vector<shogi66Action>> legal_action_cache;
+    std::string cache_key = legalActionCacheKey(check_pawn_drop_mate);
+    auto cache_it = legal_action_cache.find(cache_key);
+    if (cache_it != legal_action_cache.end()) { return cache_it->second; }
+
     std::vector<shogi66Action> actions;
-    if (winner_ != Player::kPlayerNone) return actions;
-    if (phase_ == Phase::kSetup) {
-        for (int piece = 0; piece < kshogi66SetupPieceTypes; piece++) {
-            PieceType type = shogi66Action::setupActionIdToPieceType(piece);
-            for (int to = 0; to < kshogi66BoardArea; to++) {
-                shogi66Action action(ActionType::kSetup, type, -1, to, false, turn_);
-                if (isLegalAction(action, check_pawn_drop_mate)) actions.push_back(action);
-            }
-        }
+    if (winner_ != Player::kPlayerNone) {
+        legal_action_cache.emplace(std::move(cache_key), actions);
         return actions;
     }
-    for (int from = 0; from < kshogi66BoardArea; from++) {
-        if (board_[from].owner != turn_) continue;
-        for (int to = 0; to < kshogi66BoardArea; to++) {
-            if (to == from) continue;
-            for (bool promote_move : {false, true}) {
-                shogi66Action action(ActionType::kMove, PieceType::kEmpty, from, to, promote_move, turn_);
-                if (isLegalAction(action, check_pawn_drop_mate)) actions.push_back(action);
-            }
-        }
-    }
-    for (int piece = 0; piece < kshogi66HandPieceTypes; piece++) {
-        PieceType type = shogi66Action::handActionIdToPieceType(piece);
-        for (int to = 0; to < kshogi66BoardArea; to++) {
-            shogi66Action action(ActionType::kDrop, type, -1, to, false, turn_);
+    if (phase_ == Phase::kSetup) {
+        for (int action_id = 0; action_id < kshogi66SetupActionSize; ++action_id) {
+            shogi66Action action(action_id, turn_);
             if (isLegalAction(action, check_pawn_drop_mate)) actions.push_back(action);
         }
+        auto ret = legal_action_cache.emplace(std::move(cache_key), std::move(actions));
+        return ret.first->second;
     }
-    return actions;
+    for (int move_id = 0; move_id < kshogi66MoveActionSize; ++move_id) {
+        shogi66Action action(kshogi66SetupActionSize + move_id, turn_);
+        if (board_[action.getFrom()].owner != turn_) continue;
+        if (isLegalAction(action, check_pawn_drop_mate)) actions.push_back(action);
+    }
+    for (int drop_id = 0; drop_id < kshogi66DropActionSize; ++drop_id) {
+        shogi66Action action(kshogi66SetupActionSize + kshogi66MoveActionSize + drop_id, turn_);
+        if (isLegalAction(action, check_pawn_drop_mate)) actions.push_back(action);
+    }
+    auto ret = legal_action_cache.emplace(std::move(cache_key), std::move(actions));
+    return ret.first->second;
 }
 
 bool shogi66Env::isLegalAction(const shogi66Action& action) const
@@ -707,6 +836,41 @@ std::string shogi66Env::stateKey() const
     for (Player p : {Player::kPlayer1, Player::kPlayer2})
         for (int count : hand_.get(p))
             oss << count << "|";
+    return oss.str();
+}
+
+std::string shogi66Env::legalActionCacheKey(bool check_pawn_drop_mate) const
+{
+    std::ostringstream oss;
+    oss << static_cast<int>(check_pawn_drop_mate) << "|"
+        << static_cast<int>(phase_) << "|"
+        << static_cast<int>(turn_) << "|"
+        << static_cast<int>(winner_) << "|"
+        << static_cast<int>(repetition_draw_) << "|";
+
+    for (const Piece& piece : board_) {
+        oss << static_cast<int>(piece.owner) << ":" << static_cast<int>(piece.type) << ",";
+    }
+    oss << "|";
+
+    for (Player p : {Player::kPlayer1, Player::kPlayer2}) {
+        for (int count : hand_.get(p)) { oss << count << ","; }
+        oss << "|";
+    }
+
+    for (Player p : {Player::kPlayer1, Player::kPlayer2}) {
+        for (int count : setup_pool_.get(p)) { oss << count << ","; }
+        oss << "|";
+    }
+
+    std::vector<std::string> repeated_states;
+    repeated_states.reserve(state_count_.size());
+    for (const auto& item : state_count_) {
+        if (item.second >= 3) { repeated_states.push_back(item.first); }
+    }
+    std::sort(repeated_states.begin(), repeated_states.end());
+    for (const std::string& key : repeated_states) { oss << key << ";"; }
+
     return oss.str();
 }
 
