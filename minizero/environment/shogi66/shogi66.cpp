@@ -491,22 +491,13 @@ std::vector<shogi66Action> shogi66Env::getLegalActions() const
 
 std::vector<shogi66Action> shogi66Env::getLegalActions(bool check_pawn_drop_mate) const
 {
-    static thread_local std::unordered_map<std::string, std::vector<shogi66Action>> legal_action_cache;
-    std::string cache_key = legalActionCacheKey(check_pawn_drop_mate);
-    auto cache_it = legal_action_cache.find(cache_key);
-    if (cache_it != legal_action_cache.end()) { return cache_it->second; }
-
     std::vector<shogi66Action> actions;
-    if (winner_ != Player::kPlayerNone) {
-        legal_action_cache.emplace(std::move(cache_key), actions);
-        return actions;
-    }
+    if (winner_ != Player::kPlayerNone) { return actions; }
     if (phase_ == Phase::kSetup) {
         for (const shogi66Action& action : getSetupActionList(turn_)) {
             if (isLegalAction(action, check_pawn_drop_mate)) actions.push_back(action);
         }
-        auto ret = legal_action_cache.emplace(std::move(cache_key), std::move(actions));
-        return ret.first->second;
+        return actions;
     }
     for (const shogi66Action& action : getMoveActionList(turn_)) {
         if (board_[action.getFrom()].owner != turn_) continue;
@@ -515,8 +506,7 @@ std::vector<shogi66Action> shogi66Env::getLegalActions(bool check_pawn_drop_mate
     for (const shogi66Action& action : getDropActionList(turn_)) {
         if (isLegalAction(action, check_pawn_drop_mate)) actions.push_back(action);
     }
-    auto ret = legal_action_cache.emplace(std::move(cache_key), std::move(actions));
-    return ret.first->second;
+    return actions;
 }
 
 bool shogi66Env::isLegalAction(const shogi66Action& action) const
@@ -1002,41 +992,6 @@ std::string shogi66Env::stateKey() const
     for (Player p : {Player::kPlayer1, Player::kPlayer2})
         for (int count : hand_.get(p))
             oss << count << "|";
-    return oss.str();
-}
-
-std::string shogi66Env::legalActionCacheKey(bool check_pawn_drop_mate) const
-{
-    std::ostringstream oss;
-    oss << static_cast<int>(check_pawn_drop_mate) << "|"
-        << static_cast<int>(phase_) << "|"
-        << static_cast<int>(turn_) << "|"
-        << static_cast<int>(winner_) << "|"
-        << static_cast<int>(repetition_draw_) << "|";
-
-    for (const Piece& piece : board_) {
-        oss << static_cast<int>(piece.owner) << ":" << static_cast<int>(piece.type) << ",";
-    }
-    oss << "|";
-
-    for (Player p : {Player::kPlayer1, Player::kPlayer2}) {
-        for (int count : hand_.get(p)) { oss << count << ","; }
-        oss << "|";
-    }
-
-    for (Player p : {Player::kPlayer1, Player::kPlayer2}) {
-        for (int count : setup_pool_.get(p)) { oss << count << ","; }
-        oss << "|";
-    }
-
-    std::vector<std::string> repeated_states;
-    repeated_states.reserve(state_count_.size());
-    for (const auto& item : state_count_) {
-        if (item.second >= 3) { repeated_states.push_back(item.first); }
-    }
-    std::sort(repeated_states.begin(), repeated_states.end());
-    for (const std::string& key : repeated_states) { oss << key << ";"; }
-
     return oss.str();
 }
 

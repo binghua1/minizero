@@ -129,7 +129,6 @@ private:
     bool isSetupFinished() const;
     void applyActionNoCheck(const shogi66Action& action);
     std::string stateKey() const;
-    std::string legalActionCacheKey(bool check_pawn_drop_mate) const;
     std::vector<shogi66Action> getLegalActions(bool check_pawn_drop_mate) const;
     bool isLegalAction(const shogi66Action& action, bool check_pawn_drop_mate) const;
     bool isLegalActionSlow(const shogi66Action& action, bool check_pawn_drop_mate) const;
