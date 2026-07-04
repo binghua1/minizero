@@ -118,7 +118,10 @@ private:
     bool isLegalMove(const shogi66Action& action) const;
     bool isLegalDrop(const shogi66Action& action) const;
     bool attacksSquare(int from, int to) const;
+    Piece getPieceAfterAction(const shogi66Action& action, int pos) const;
+    bool attacksSquareAfterAction(const shogi66Action& action, int from, int to) const;
     bool isKingInCheck(Player player) const;
+    bool isKingInCheckAfterAction(const shogi66Action& action, Player player) const;
     bool isPawnDropMate(const shogi66Action& action) const;
     bool canPromote(Player player, int from, int to, PieceType type) const;
     bool mustPromote(Player player, int to, PieceType type) const;
@@ -129,6 +132,7 @@ private:
     std::string legalActionCacheKey(bool check_pawn_drop_mate) const;
     std::vector<shogi66Action> getLegalActions(bool check_pawn_drop_mate) const;
     bool isLegalAction(const shogi66Action& action, bool check_pawn_drop_mate) const;
+    bool isLegalActionSlow(const shogi66Action& action, bool check_pawn_drop_mate) const;
     Player winnerByMissingKing() const;
 
     Phase phase_;

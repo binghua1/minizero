@@ -487,6 +487,34 @@ bool shogi66Env::isLegalAction(const shogi66Action& action, bool check_pawn_drop
     if (action.getType() == ActionType::kSetup) return false;
     if (action.getType() == ActionType::kMove && !isLegalMove(action)) return false;
     if (action.getType() == ActionType::kDrop && !isLegalDrop(action)) return false;
+
+    bool legal = !isKingInCheckAfterAction(action, turn_);
+    bool gives_check = legal && isKingInCheckAfterAction(action, action.nextPlayer());
+    if (legal && gives_check) {
+        shogi66Env nxt = *this;
+        nxt.applyActionNoCheck(action);
+        nxt.turn_ = action.nextPlayer();
+        auto it = state_count_.find(nxt.stateKey());
+        if (it != state_count_.end() && it->second >= 3) legal = false;
+    }
+    if (legal && check_pawn_drop_mate && gives_check &&
+        action.getType() == ActionType::kDrop && action.getPieceType() == PieceType::kPawn && isPawnDropMate(action)) {
+        legal = false;
+    }
+
+#ifdef SHOGI66_VERIFY_FAST_LEGAL
+    assert(legal == isLegalActionSlow(action, check_pawn_drop_mate));
+#endif
+    return legal;
+}
+
+bool shogi66Env::isLegalActionSlow(const shogi66Action& action, bool check_pawn_drop_mate) const
+{
+    if (action.getPlayer() != turn_ || action.getActionID() < 0 || !inBoard(action.getTo())) return false;
+    if (phase_ == Phase::kSetup) return action.getType() == ActionType::kSetup && isLegalSetupAction(action);
+    if (action.getType() == ActionType::kSetup) return false;
+    if (action.getType() == ActionType::kMove && !isLegalMove(action)) return false;
+    if (action.getType() == ActionType::kDrop && !isLegalDrop(action)) return false;
     shogi66Env nxt = *this;
     nxt.applyActionNoCheck(action);
     if (nxt.isKingInCheck(turn_)) return false;
@@ -602,6 +630,81 @@ bool shogi66Env::attacksSquare(int from, int to) const
     }
 }
 
+Piece shogi66Env::getPieceAfterAction(const shogi66Action& action, int pos) const
+{
+    if (!inBoard(pos)) return Piece();
+
+    if (action.getType() == ActionType::kSetup) {
+        return pos == action.getTo() ? Piece(action.getPlayer(), action.getPieceType()) : board_[pos];
+    }
+    if (action.getType() == ActionType::kDrop) {
+        return pos == action.getTo() ? Piece(action.getPlayer(), action.getPieceType()) : board_[pos];
+    }
+    if (action.getType() != ActionType::kMove) return board_[pos];
+    if (pos == action.getFrom()) return Piece();
+    if (pos != action.getTo()) return board_[pos];
+
+    Piece piece = board_[action.getFrom()];
+    if (action.isPromote()) piece.type = promoted(piece.type);
+    return piece;
+}
+
+bool shogi66Env::attacksSquareAfterAction(const shogi66Action& action, int from, int to) const
+{
+    Piece piece = getPieceAfterAction(action, from);
+    if (!isPlayer(piece.owner) || !inBoard(to) || from == to) return false;
+
+    int dr = row(to) - row(from);
+    int dc = col(to) - col(from);
+    int forward = dir(piece.owner);
+
+    auto check_line = [&]() {
+        int sr = dr == 0 ? 0 : (dr > 0 ? 1 : -1);
+        int sc = dc == 0 ? 0 : (dc > 0 ? 1 : -1);
+        int r = row(from) + sr;
+        int c = col(from) + sc;
+        while (r != row(to) || c != col(to)) {
+            if (getPieceAfterAction(action, r * kshogi66BoardSize + c).owner != Player::kPlayerNone) return false;
+            r += sr, c += sc;
+        }
+        return true;
+    };
+
+    switch (piece.type) {
+        case PieceType::kKing:
+            return std::max(std::abs(dr), std::abs(dc)) == 1;
+        case PieceType::kGold:
+        case PieceType::kPromSilver:
+        case PieceType::kPromKnight:
+        case PieceType::kPromLance:
+        case PieceType::kTokin:
+            return (dr == forward && std::abs(dc) <= 1) ||
+                   (dr == 0 && std::abs(dc) == 1) ||
+                   (dr == -forward && dc == 0);
+        case PieceType::kSilver:
+            return (dr == forward && std::abs(dc) <= 1) ||
+                   (dr == -forward && std::abs(dc) == 1);
+        case PieceType::kKnight:
+            return dr == 2 * forward && std::abs(dc) == 1;
+        case PieceType::kLance:
+            return dc == 0 && dr * forward > 0 && check_line();
+        case PieceType::kRook:
+            return (dr == 0 || dc == 0) && check_line();
+        case PieceType::kBishop:
+            return std::abs(dr) == std::abs(dc) && check_line();
+        case PieceType::kDragon:
+            return ((dr == 0 || dc == 0) && check_line()) ||
+                   (std::abs(dr) == std::abs(dc) && std::abs(dr) == 1);
+        case PieceType::kHorse:
+            return (std::abs(dr) == std::abs(dc) && check_line()) ||
+                   ((std::abs(dr) == 1 && dc == 0) || (dr == 0 && std::abs(dc) == 1));
+        case PieceType::kPawn:
+            return dr == forward && dc == 0;
+        default:
+            return false;
+    }
+}
+
 bool shogi66Env::isKingInCheck(Player player) const
 {
     int king = -1;
@@ -615,6 +718,25 @@ bool shogi66Env::isKingInCheck(Player player) const
     Player opponent = getNextPlayer(player, kshogi66NumPlayer);
     for (int pos = 0; pos < kshogi66BoardArea; pos++) {
         if (board_[pos].owner == opponent && attacksSquare(pos, king)) return true;
+    }
+    return false;
+}
+
+bool shogi66Env::isKingInCheckAfterAction(const shogi66Action& action, Player player) const
+{
+    int king = -1;
+    for (int pos = 0; pos < kshogi66BoardArea; pos++) {
+        Piece piece = getPieceAfterAction(action, pos);
+        if (piece.owner == player && piece.type == PieceType::kKing) {
+            king = pos;
+            break;
+        }
+    }
+    if (king < 0) return true;
+
+    Player opponent = getNextPlayer(player, kshogi66NumPlayer);
+    for (int pos = 0; pos < kshogi66BoardArea; pos++) {
+        if (getPieceAfterAction(action, pos).owner == opponent && attacksSquareAfterAction(action, pos, king)) return true;
     }
     return false;
 }
