@@ -1,5 +1,6 @@
 #include "shogi66.h"
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <sstream>
 #include <string>
@@ -178,6 +179,52 @@ const std::unordered_map<int, int>& getEncodedDropIndex()
         return ret;
     }();
     return index;
+}
+
+int actionPlayerIndex(Player player)
+{
+    return player == Player::kPlayer2 ? 1 : 0;
+}
+
+std::vector<shogi66Action> buildDecodedActions(Player player, int first_id, int count)
+{
+    std::vector<shogi66Action> actions;
+    actions.reserve(count);
+    for (int id = first_id; id < first_id + count; ++id) { actions.emplace_back(id, player); }
+    return actions;
+}
+
+const std::vector<shogi66Action>& getSetupActionList(Player player)
+{
+    static const std::array<std::vector<shogi66Action>, kshogi66NumPlayer> actions = [] {
+        std::array<std::vector<shogi66Action>, kshogi66NumPlayer> ret;
+        ret[actionPlayerIndex(Player::kPlayer1)] = buildDecodedActions(Player::kPlayer1, 0, kshogi66SetupActionSize);
+        ret[actionPlayerIndex(Player::kPlayer2)] = buildDecodedActions(Player::kPlayer2, 0, kshogi66SetupActionSize);
+        return ret;
+    }();
+    return actions[actionPlayerIndex(player)];
+}
+
+const std::vector<shogi66Action>& getMoveActionList(Player player)
+{
+    static const std::array<std::vector<shogi66Action>, kshogi66NumPlayer> actions = [] {
+        std::array<std::vector<shogi66Action>, kshogi66NumPlayer> ret;
+        ret[actionPlayerIndex(Player::kPlayer1)] = buildDecodedActions(Player::kPlayer1, kshogi66SetupActionSize, kshogi66MoveActionSize);
+        ret[actionPlayerIndex(Player::kPlayer2)] = buildDecodedActions(Player::kPlayer2, kshogi66SetupActionSize, kshogi66MoveActionSize);
+        return ret;
+    }();
+    return actions[actionPlayerIndex(player)];
+}
+
+const std::vector<shogi66Action>& getDropActionList(Player player)
+{
+    static const std::array<std::vector<shogi66Action>, kshogi66NumPlayer> actions = [] {
+        std::array<std::vector<shogi66Action>, kshogi66NumPlayer> ret;
+        ret[actionPlayerIndex(Player::kPlayer1)] = buildDecodedActions(Player::kPlayer1, kshogi66SetupActionSize + kshogi66MoveActionSize, kshogi66DropActionSize);
+        ret[actionPlayerIndex(Player::kPlayer2)] = buildDecodedActions(Player::kPlayer2, kshogi66SetupActionSize + kshogi66MoveActionSize, kshogi66DropActionSize);
+        return ret;
+    }();
+    return actions[actionPlayerIndex(player)];
 }
 
     std::string squareToString(int pos)
@@ -455,20 +502,17 @@ std::vector<shogi66Action> shogi66Env::getLegalActions(bool check_pawn_drop_mate
         return actions;
     }
     if (phase_ == Phase::kSetup) {
-        for (int action_id = 0; action_id < kshogi66SetupActionSize; ++action_id) {
-            shogi66Action action(action_id, turn_);
+        for (const shogi66Action& action : getSetupActionList(turn_)) {
             if (isLegalAction(action, check_pawn_drop_mate)) actions.push_back(action);
         }
         auto ret = legal_action_cache.emplace(std::move(cache_key), std::move(actions));
         return ret.first->second;
     }
-    for (int move_id = 0; move_id < kshogi66MoveActionSize; ++move_id) {
-        shogi66Action action(kshogi66SetupActionSize + move_id, turn_);
+    for (const shogi66Action& action : getMoveActionList(turn_)) {
         if (board_[action.getFrom()].owner != turn_) continue;
         if (isLegalAction(action, check_pawn_drop_mate)) actions.push_back(action);
     }
-    for (int drop_id = 0; drop_id < kshogi66DropActionSize; ++drop_id) {
-        shogi66Action action(kshogi66SetupActionSize + kshogi66MoveActionSize + drop_id, turn_);
+    for (const shogi66Action& action : getDropActionList(turn_)) {
         if (isLegalAction(action, check_pawn_drop_mate)) actions.push_back(action);
     }
     auto ret = legal_action_cache.emplace(std::move(cache_key), std::move(actions));
