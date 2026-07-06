@@ -466,7 +466,11 @@ void shogi66Env::reset()
 bool shogi66Env::act(const shogi66Action& action)
 {
     if (!isLegalAction(action)) return false;
+    return actNoCheck(action);
+}
 
+bool shogi66Env::actNoCheck(const shogi66Action& action)
+{
     actions_.push_back(action);
     applyActionNoCheck(action);
     if (winner_ == Player::kPlayerNone) winner_ = winnerByMissingKing();

@@ -2,7 +2,11 @@
 #include "random.h"
 #include "time_system.h"
 #include <algorithm>
+#include <cassert>
+#include <cstdlib>
+#include <iostream>
 #include <memory>
+#include <type_traits>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -11,6 +15,63 @@ namespace minizero::actor {
 
 using namespace minizero;
 using namespace network;
+
+namespace {
+
+template <typename Env, typename Act, typename = void>
+struct HasActNoCheck : std::false_type {};
+
+template <typename Env, typename Act>
+using ActNoCheckResult = decltype(std::declval<Env&>().actNoCheck(std::declval<const Act&>()));
+
+template <typename Env, typename Act>
+struct HasActNoCheck<Env, Act, std::void_t<ActNoCheckResult<Env, Act>>> : std::true_type {};
+
+bool verifyNoCheckReplay()
+{
+    static const bool enabled = std::getenv("MINIZERO_VERIFY_REPLAY") != nullptr;
+    return enabled;
+}
+
+void requireSameReplayState(bool condition, const Environment& checked, const Environment& replayed, const Action& action)
+{
+    if (condition) { return; }
+    std::cerr << "[Replay Verification Failed] action: " << action.toConsoleString()
+              << " (" << action.getActionID() << ")" << std::endl
+              << "[checked by act()]" << std::endl
+              << checked.toString()
+              << "[replayed by actNoCheck()]" << std::endl
+              << replayed.toString();
+    assert(condition);
+    std::abort();
+}
+
+void replayAction(Environment& env, const Action& action)
+{
+    if constexpr (HasActNoCheck<Environment, Action>::value) {
+        if (verifyNoCheckReplay()) {
+            Environment checked = env;
+            bool checked_ok = checked.act(action);
+            bool replayed_ok = env.actNoCheck(action);
+            requireSameReplayState(checked_ok == replayed_ok &&
+                                       checked.getTurn() == env.getTurn() &&
+                                       checked.getActionHistory().size() == env.getActionHistory().size() &&
+                                       checked.isTerminal() == env.isTerminal() &&
+                                       checked.getReward() == env.getReward() &&
+                                       checked.getEvalScore() == env.getEvalScore() &&
+                                       checked.toString() == env.toString(),
+                                   checked,
+                                   env,
+                                   action);
+            return;
+        }
+        env.actNoCheck(action);
+    } else {
+        env.act(action);
+    }
+}
+
+} // namespace
 
 void MCTSSearchData::clear()
 {
@@ -261,7 +322,7 @@ std::vector<MCTS::ActionCandidate> ZeroActor::calculateMuZeroActionPolicy(MCTSNo
 Environment ZeroActor::getEnvironmentTransition(const std::vector<MCTSNode*>& node_path)
 {
     Environment env = env_;
-    for (size_t i = 1; i < node_path.size(); ++i) { env.act(node_path[i]->getAction()); }
+    for (size_t i = 1; i < node_path.size(); ++i) { replayAction(env, node_path[i]->getAction()); }
     return env;
 }
 

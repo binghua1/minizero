@@ -93,6 +93,7 @@ public:
 
     void reset() override;
     bool act(const shogi66Action& action) override;
+    bool actNoCheck(const shogi66Action& action);
     bool act(const std::vector<std::string>& action_string_args) override;
 
     std::vector<shogi66Action> getLegalActions() const override;
