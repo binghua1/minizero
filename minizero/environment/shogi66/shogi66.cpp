@@ -871,6 +871,8 @@ std::vector<float> shogi66Env::getFeatures(utils::Rotation rotation) const
     constexpr int kOppAttackCountChannel = 45;
     constexpr int kOwnAttackBinaryChannel = 46;
     constexpr int kOppAttackBinaryChannel = 47;
+    constexpr int kOwnSetupRemainingStartChannel = 48;
+    constexpr int kOppSetupRemainingStartChannel = 55;
     std::vector<float> features(getNumInputChannels() * spatial, 0.0f);
     auto piece = [&](PieceType type) {
         switch (type) {
@@ -932,6 +934,15 @@ std::vector<float> shogi66Env::getFeatures(utils::Rotation rotation) const
         features[kOppAttackCountChannel * spatial + pos] = std::min(opp_attack_count[pos], 3) / 3.0f;
         features[kOwnAttackBinaryChannel * spatial + pos] = own_attack_count[pos] > 0 ? 1.0f : 0.0f;
         features[kOppAttackBinaryChannel * spatial + pos] = opp_attack_count[pos] > 0 ? 1.0f : 0.0f;
+    }
+
+    for (int piece = 0; piece < kshogi66SetupPieceTypes; ++piece) {
+        float own_remaining = setup_pool_.get(turn_)[piece] > 0 ? 1.0f : 0.0f;
+        float opp_remaining = setup_pool_.get(nxt_player)[piece] > 0 ? 1.0f : 0.0f;
+        for (int pos = 0; pos < spatial; ++pos) {
+            features[(kOwnSetupRemainingStartChannel + piece) * spatial + pos] = own_remaining;
+            features[(kOppSetupRemainingStartChannel + piece) * spatial + pos] = opp_remaining;
+        }
     }
     return features;
 }
