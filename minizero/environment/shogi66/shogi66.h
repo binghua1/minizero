@@ -15,9 +15,9 @@ constexpr int kshogi66BoardArea = kshogi66BoardSize * kshogi66BoardSize; // 36
 constexpr int kshogi66SetupPieceTypes = 7;                               // # of setup
 constexpr int kshogi66HandPieceTypes = 7;                                // # of drop
 
-constexpr int kshogi66SetupActionSize = kshogi66SetupPieceTypes * kshogi66BoardArea;
-constexpr int kshogi66MoveActionSize = kshogi66BoardArea * kshogi66BoardArea * 2; // 升
-constexpr int kshogi66DropActionSize = kshogi66HandPieceTypes * kshogi66BoardArea;
+constexpr int kshogi66SetupActionSize = kshogi66SetupPieceTypes * kshogi66BoardSize;
+constexpr int kshogi66MoveActionSize = 1228; // physically reachable from-to moves, with promotion variants where promotion is possible
+constexpr int kshogi66DropActionSize = 228;  // physically droppable hand-piece squares from the current player's perspective
 constexpr int kshogi66PolicySize = kshogi66SetupActionSize + kshogi66MoveActionSize + kshogi66DropActionSize;
 using shogi66Hand = std::array<int, kshogi66HandPieceTypes>;
 using shogi66SetupPool = std::array<int, kshogi66SetupPieceTypes>;
@@ -76,7 +76,7 @@ public:
     static int handPieceToActionId(PieceType piece_type);
     static PieceType setupActionIdToPieceType(int index);
     static PieceType handActionIdToPieceType(int index);
-    static int encodeActionId(ActionType type, PieceType piece_type, int from, int to, bool promote);
+    static int encodeActionId(ActionType type, PieceType piece_type, int from, int to, bool promote, Player player);
 
 private:
     void decodeActionId();
@@ -93,6 +93,7 @@ public:
 
     void reset() override;
     bool act(const shogi66Action& action) override;
+    bool actNoCheck(const shogi66Action& action);
     bool act(const std::vector<std::string>& action_string_args) override;
 
     std::vector<shogi66Action> getLegalActions() const override;
@@ -118,7 +119,10 @@ private:
     bool isLegalMove(const shogi66Action& action) const;
     bool isLegalDrop(const shogi66Action& action) const;
     bool attacksSquare(int from, int to) const;
+    Piece getPieceAfterAction(const shogi66Action& action, int pos) const;
+    bool attacksSquareAfterAction(const shogi66Action& action, int from, int to) const;
     bool isKingInCheck(Player player) const;
+    bool isKingInCheckAfterAction(const shogi66Action& action, Player player) const;
     bool isPawnDropMate(const shogi66Action& action) const;
     bool canPromote(Player player, int from, int to, PieceType type) const;
     bool mustPromote(Player player, int to, PieceType type) const;
@@ -128,6 +132,7 @@ private:
     std::string stateKey() const;
     std::vector<shogi66Action> getLegalActions(bool check_pawn_drop_mate) const;
     bool isLegalAction(const shogi66Action& action, bool check_pawn_drop_mate) const;
+    bool isLegalActionSlow(const shogi66Action& action, bool check_pawn_drop_mate) const;
     Player winnerByMissingKing() const;
 
     Phase phase_;

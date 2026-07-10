@@ -2,8 +2,11 @@
 #include "random.h"
 #include "time_system.h"
 #include <algorithm>
+#include <cassert>
+#include <cstdlib>
+#include <iostream>
 #include <memory>
-#include <tuple>
+#include <type_traits>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -13,11 +16,69 @@ namespace minizero::actor {
 using namespace minizero;
 using namespace network;
 
+namespace {
+
+template <typename Env, typename Act, typename = void>
+struct HasActNoCheck : std::false_type {};
+
+template <typename Env, typename Act>
+using ActNoCheckResult = decltype(std::declval<Env&>().actNoCheck(std::declval<const Act&>()));
+
+template <typename Env, typename Act>
+struct HasActNoCheck<Env, Act, std::void_t<ActNoCheckResult<Env, Act>>> : std::true_type {};
+
+bool verifyNoCheckReplay()
+{
+    static const bool enabled = std::getenv("MINIZERO_VERIFY_REPLAY") != nullptr;
+    return enabled;
+}
+
+void requireSameReplayState(bool condition, const Environment& checked, const Environment& replayed, const Action& action)
+{
+    if (condition) { return; }
+    std::cerr << "[Replay Verification Failed] action: " << action.toConsoleString()
+              << " (" << action.getActionID() << ")" << std::endl
+              << "[checked by act()]" << std::endl
+              << checked.toString()
+              << "[replayed by actNoCheck()]" << std::endl
+              << replayed.toString();
+    assert(condition);
+    std::abort();
+}
+
+void replayAction(Environment& env, const Action& action)
+{
+    if constexpr (HasActNoCheck<Environment, Action>::value) {
+        if (verifyNoCheckReplay()) {
+            Environment checked = env;
+            bool checked_ok = checked.act(action);
+            bool replayed_ok = env.actNoCheck(action);
+            requireSameReplayState(checked_ok == replayed_ok &&
+                                       checked.getTurn() == env.getTurn() &&
+                                       checked.getActionHistory().size() == env.getActionHistory().size() &&
+                                       checked.isTerminal() == env.isTerminal() &&
+                                       checked.getReward() == env.getReward() &&
+                                       checked.getEvalScore() == env.getEvalScore() &&
+                                       checked.toString() == env.toString(),
+                                   checked,
+                                   env,
+                                   action);
+            return;
+        }
+        env.actNoCheck(action);
+    } else {
+        env.act(action);
+    }
+}
+
+} // namespace
+
 void MCTSSearchData::clear()
 {
     search_info_ = "";
     selected_node_ = nullptr;
     node_path_.clear();
+    has_env_transition_ = false;
 }
 
 void ZeroActor::reset()
@@ -29,7 +90,7 @@ void ZeroActor::reset()
 void ZeroActor::resetSearch()
 {
     BaseActor::resetSearch();
-    mcts_search_data_.node_path_.clear();
+    mcts_search_data_.clear();
     getMCTS()->getRootNode()->setAction(Action(-1, env::getPreviousPlayer(env_.getTurn(), env_.getNumPlayer())));
 }
 
@@ -52,10 +113,12 @@ void ZeroActor::beforeNNEvaluation()
 {
     mcts_search_data_.node_path_ = selection();
     if (alphazero_network_) {
-        Environment env_transition = getEnvironmentTransition(mcts_search_data_.node_path_);
+        mcts_search_data_.env_transition_ = getEnvironmentTransition(mcts_search_data_.node_path_);
+        mcts_search_data_.has_env_transition_ = true;
         feature_rotation_ = config::actor_use_random_rotation_features ? static_cast<utils::Rotation>(utils::Random::randInt() % static_cast<int>(utils::Rotation::kRotateSize)) : utils::Rotation::kRotationNone;
-        nn_evaluation_batch_id_ = alphazero_network_->pushBack(env_transition.getFeatures(feature_rotation_));
+        nn_evaluation_batch_id_ = alphazero_network_->pushBack(mcts_search_data_.env_transition_.getFeatures(feature_rotation_));
     } else if (muzero_network_) {
+        mcts_search_data_.has_env_transition_ = false;
         if (getMCTS()->getNumSimulation() == 0) { // initial inference for root node
             nn_evaluation_batch_id_ = muzero_network_->pushBackInitialData(env_.getFeatures());
         } else { // for non-root nodes
@@ -76,7 +139,8 @@ void ZeroActor::afterNNEvaluation(const std::shared_ptr<NetworkOutput>& network_
     const std::vector<MCTSNode*>& node_path = mcts_search_data_.node_path_;
     MCTSNode* leaf_node = node_path.back();
     if (alphazero_network_) {
-        Environment env_transition = getEnvironmentTransition(node_path);
+        assert(mcts_search_data_.has_env_transition_);
+        const Environment& env_transition = mcts_search_data_.env_transition_;
         if (!env_transition.isTerminal()) {
             std::shared_ptr<AlphaZeroNetworkOutput> alphazero_output = std::static_pointer_cast<AlphaZeroNetworkOutput>(network_output);
             getMCTS()->expand(leaf_node, calculateAlphaZeroActionPolicy(env_transition, alphazero_output, feature_rotation_));
@@ -135,21 +199,34 @@ void ZeroActor::step()
                               (alphazero_network_ || num_simulation > 0) ? num_simulation_left : 1 /* initial inference for root node */);
     assert(batch_size > 0);
 
-    std::vector<std::tuple<int, utils::Rotation, decltype(mcts_search_data_.node_path_)>> batch_queries; // batch id, rotation, search path
+    struct NNEvaluationQuery {
+        int batch_id_;
+        utils::Rotation feature_rotation_;
+        std::vector<MCTSNode*> node_path_;
+        Environment env_transition_;
+        bool has_env_transition_;
+    };
+    std::vector<NNEvaluationQuery> batch_queries;
     for (int batch_id = 0; batch_id < batch_size; batch_id++) {
         beforeNNEvaluation();
         assert(nn_evaluation_batch_id_ == batch_id);
         if (mcts_search_data_.node_path_.back()->getVirtualLoss() == 0) {
-            batch_queries.emplace_back(nn_evaluation_batch_id_, feature_rotation_, mcts_search_data_.node_path_);
+            batch_queries.push_back({nn_evaluation_batch_id_,
+                                     feature_rotation_,
+                                     mcts_search_data_.node_path_,
+                                     mcts_search_data_.env_transition_,
+                                     mcts_search_data_.has_env_transition_});
         }
         for (auto node : mcts_search_data_.node_path_) { node->addVirtualLoss(); }
     }
     auto network_output = alphazero_network_ ? alphazero_network_->forward()
                                              : (num_simulation == 0 ? muzero_network_->initialInference() : muzero_network_->recurrentInference());
     for (auto& query : batch_queries) {
-        nn_evaluation_batch_id_ = std::get<0>(query);
-        feature_rotation_ = std::get<1>(query);
-        mcts_search_data_.node_path_ = std::get<2>(query);
+        nn_evaluation_batch_id_ = query.batch_id_;
+        feature_rotation_ = query.feature_rotation_;
+        mcts_search_data_.node_path_ = query.node_path_;
+        mcts_search_data_.env_transition_ = query.env_transition_;
+        mcts_search_data_.has_env_transition_ = query.has_env_transition_;
         afterNNEvaluation(network_output[nn_evaluation_batch_id_]);
         auto virtual_loss = mcts_search_data_.node_path_.back()->getVirtualLoss();
         for (auto node : mcts_search_data_.node_path_) { node->removeVirtualLoss(virtual_loss); }
@@ -216,10 +293,8 @@ std::vector<MCTS::ActionCandidate> ZeroActor::calculateAlphaZeroActionPolicy(con
 {
     assert(alphazero_network_);
     std::vector<MCTS::ActionCandidate> action_candidates;
-    for (size_t action_id = 0; action_id < alphazero_output->policy_.size(); ++action_id) {
-        Action action(action_id, env_transition.getTurn());
-        if (!env_transition.isLegalAction(action)) { continue; }
-        int rotated_id = env_transition.getRotateAction(action_id, rotation);
+    for (const Action& action : env_transition.getLegalActions()) {
+        int rotated_id = env_transition.getRotateAction(action.getActionID(), rotation);
         action_candidates.push_back(MCTS::ActionCandidate(action, alphazero_output->policy_[rotated_id], alphazero_output->policy_logits_[rotated_id]));
     }
     sort(action_candidates.begin(), action_candidates.end(), [](const MCTS::ActionCandidate& lhs, const MCTS::ActionCandidate& rhs) {
@@ -247,7 +322,7 @@ std::vector<MCTS::ActionCandidate> ZeroActor::calculateMuZeroActionPolicy(MCTSNo
 Environment ZeroActor::getEnvironmentTransition(const std::vector<MCTSNode*>& node_path)
 {
     Environment env = env_;
-    for (size_t i = 1; i < node_path.size(); ++i) { env.act(node_path[i]->getAction()); }
+    for (size_t i = 1; i < node_path.size(); ++i) { replayAction(env, node_path[i]->getAction()); }
     return env;
 }
 

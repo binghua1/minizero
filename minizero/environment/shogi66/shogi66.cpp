@@ -1,7 +1,10 @@
 #include "shogi66.h"
 #include <algorithm>
+#include <array>
+#include <cassert>
 #include <sstream>
 #include <string>
+#include <utility>
 
 namespace minizero::env::shogi66 {
 
@@ -53,6 +56,176 @@ namespace {
     {
         return promoted(type) != type;
     }
+
+struct EncodedMove {
+    int from;
+    int to;
+    bool promote;
+};
+
+bool isPotentialMove(int from, int to)
+{
+    if (!inBoard(from) || !inBoard(to) || from == to) return false;
+    int dr = row(to) - row(from);
+    int dc = col(to) - col(from);
+    int adr = std::abs(dr);
+    int adc = std::abs(dc);
+    return dr == 0 || dc == 0 || adr == adc || (adr == 2 && adc == 1);
+}
+
+bool isPotentialPromotion(int from, int to)
+{
+    auto in_promotion_zone = [](int pos) {
+        int r = row(pos);
+        return r <= 1 || r >= kshogi66BoardSize - 2;
+    };
+    return in_promotion_zone(from) || in_promotion_zone(to);
+}
+
+int moveKey(int from, int to, bool promote)
+{
+    return ((from * kshogi66BoardArea + to) << 1) + static_cast<int>(promote);
+}
+
+int toRelativePosition(int pos, Player player)
+{
+    if (!inBoard(pos)) return -1;
+    if (player == Player::kPlayer2) { return (kshogi66BoardSize - 1 - row(pos)) * kshogi66BoardSize + col(pos); }
+    return pos;
+}
+
+int fromRelativePosition(int pos, Player player)
+{
+    return toRelativePosition(pos, player);
+}
+
+int dropKey(PieceType piece_type, int relative_to)
+{
+    return shogi66Action::handPieceToActionId(piece_type) * kshogi66BoardArea + relative_to;
+}
+
+struct EncodedDrop {
+    PieceType piece_type;
+    int relative_to;
+};
+
+bool isPotentialDrop(PieceType piece_type, int relative_to)
+{
+    if (!inBoard(relative_to)) return false;
+    int r = row(relative_to);
+    if ((piece_type == PieceType::kPawn || piece_type == PieceType::kLance) && r == kshogi66BoardSize - 1) return false;
+    if (piece_type == PieceType::kKnight && r >= kshogi66BoardSize - 2) return false;
+    return true;
+}
+
+const std::vector<EncodedMove>& getEncodedMoves()
+{
+    static const std::vector<EncodedMove> moves = [] {
+        std::vector<EncodedMove> ret;
+        ret.reserve(kshogi66MoveActionSize);
+        for (int from = 0; from < kshogi66BoardArea; ++from) {
+            for (int to = 0; to < kshogi66BoardArea; ++to) {
+                if (!isPotentialMove(from, to)) continue;
+                ret.push_back({from, to, false});
+                if (isPotentialPromotion(from, to)) { ret.push_back({from, to, true}); }
+            }
+        }
+        assert(static_cast<int>(ret.size()) == kshogi66MoveActionSize);
+        return ret;
+    }();
+    return moves;
+}
+
+const std::unordered_map<int, int>& getEncodedMoveIndex()
+{
+    static const std::unordered_map<int, int> index = [] {
+        std::unordered_map<int, int> ret;
+        const auto& moves = getEncodedMoves();
+        ret.reserve(moves.size());
+        for (int i = 0; i < static_cast<int>(moves.size()); ++i) {
+            ret[moveKey(moves[i].from, moves[i].to, moves[i].promote)] = i;
+        }
+        return ret;
+    }();
+    return index;
+}
+
+const std::vector<EncodedDrop>& getEncodedDrops()
+{
+    static const std::vector<EncodedDrop> drops = [] {
+        std::vector<EncodedDrop> ret;
+        ret.reserve(kshogi66DropActionSize);
+        for (int piece = 0; piece < kshogi66HandPieceTypes; ++piece) {
+            PieceType type = shogi66Action::handActionIdToPieceType(piece);
+            for (int relative_to = 0; relative_to < kshogi66BoardArea; ++relative_to) {
+                if (isPotentialDrop(type, relative_to)) { ret.push_back({type, relative_to}); }
+            }
+        }
+        assert(static_cast<int>(ret.size()) == kshogi66DropActionSize);
+        return ret;
+    }();
+    return drops;
+}
+
+const std::unordered_map<int, int>& getEncodedDropIndex()
+{
+    static const std::unordered_map<int, int> index = [] {
+        std::unordered_map<int, int> ret;
+        const auto& drops = getEncodedDrops();
+        ret.reserve(drops.size());
+        for (int i = 0; i < static_cast<int>(drops.size()); ++i) {
+            ret[dropKey(drops[i].piece_type, drops[i].relative_to)] = i;
+        }
+        return ret;
+    }();
+    return index;
+}
+
+int actionPlayerIndex(Player player)
+{
+    return player == Player::kPlayer2 ? 1 : 0;
+}
+
+std::vector<shogi66Action> buildDecodedActions(Player player, int first_id, int count)
+{
+    std::vector<shogi66Action> actions;
+    actions.reserve(count);
+    for (int id = first_id; id < first_id + count; ++id) { actions.emplace_back(id, player); }
+    return actions;
+}
+
+const std::vector<shogi66Action>& getSetupActionList(Player player)
+{
+    static const std::array<std::vector<shogi66Action>, kshogi66NumPlayer> actions = [] {
+        std::array<std::vector<shogi66Action>, kshogi66NumPlayer> ret;
+        ret[actionPlayerIndex(Player::kPlayer1)] = buildDecodedActions(Player::kPlayer1, 0, kshogi66SetupActionSize);
+        ret[actionPlayerIndex(Player::kPlayer2)] = buildDecodedActions(Player::kPlayer2, 0, kshogi66SetupActionSize);
+        return ret;
+    }();
+    return actions[actionPlayerIndex(player)];
+}
+
+const std::vector<shogi66Action>& getMoveActionList(Player player)
+{
+    static const std::array<std::vector<shogi66Action>, kshogi66NumPlayer> actions = [] {
+        std::array<std::vector<shogi66Action>, kshogi66NumPlayer> ret;
+        ret[actionPlayerIndex(Player::kPlayer1)] = buildDecodedActions(Player::kPlayer1, kshogi66SetupActionSize, kshogi66MoveActionSize);
+        ret[actionPlayerIndex(Player::kPlayer2)] = buildDecodedActions(Player::kPlayer2, kshogi66SetupActionSize, kshogi66MoveActionSize);
+        return ret;
+    }();
+    return actions[actionPlayerIndex(player)];
+}
+
+const std::vector<shogi66Action>& getDropActionList(Player player)
+{
+    static const std::array<std::vector<shogi66Action>, kshogi66NumPlayer> actions = [] {
+        std::array<std::vector<shogi66Action>, kshogi66NumPlayer> ret;
+        ret[actionPlayerIndex(Player::kPlayer1)] = buildDecodedActions(Player::kPlayer1, kshogi66SetupActionSize + kshogi66MoveActionSize, kshogi66DropActionSize);
+        ret[actionPlayerIndex(Player::kPlayer2)] = buildDecodedActions(Player::kPlayer2, kshogi66SetupActionSize + kshogi66MoveActionSize, kshogi66DropActionSize);
+        return ret;
+    }();
+    return actions[actionPlayerIndex(player)];
+}
 
     std::string squareToString(int pos)
     {
@@ -117,7 +290,7 @@ shogi66Action::shogi66Action(int action_id, Player player) : BaseBoardAction<ksh
 }
 
 shogi66Action::shogi66Action(ActionType type, PieceType piece_type, int from, int to, bool promote, Player player)
-    : BaseBoardAction<kshogi66NumPlayer>(encodeActionId(type, piece_type, from, to, promote), player), // id, player
+    : BaseBoardAction<kshogi66NumPlayer>(encodeActionId(type, piece_type, from, to, promote, player), player), // id, player
       type_(type), piece_type_(piece_type), from_(from), to_(to), promote_(promote)
 {
 }
@@ -143,7 +316,7 @@ shogi66Action::shogi66Action(const std::vector<std::string>& action_string_args)
         from_ = stringToSquare(s.substr(0, 2));
         to_ = stringToSquare(s.substr(2, 2));
     }
-    action_id_ = encodeActionId(type_, piece_type_, from_, to_, promote_);
+    action_id_ = encodeActionId(type_, piece_type_, from_, to_, promote_, player_);
 }
 
 int shogi66Action::setupPieceToActionId(PieceType piece_type)
@@ -190,16 +363,19 @@ PieceType shogi66Action::handActionIdToPieceType(int index)
     return 0 <= index && index < kshogi66HandPieceTypes ? pieces[index] : PieceType::kEmpty;
 }
 
-int shogi66Action::encodeActionId(ActionType type, PieceType piece_type, int from, int to, bool promote)
+int shogi66Action::encodeActionId(ActionType type, PieceType piece_type, int from, int to, bool promote, Player player)
 {
     if (type == ActionType::kSetup) { // 1
         int id = setupPieceToActionId(piece_type);
-        return id < 0 || !inBoard(to) ? -1 : id * kshogi66BoardArea + to;
+        int relative_to = toRelativePosition(to, player);
+        return id < 0 || !inBoard(relative_to) || row(relative_to) != 0 ? -1 : id * kshogi66BoardSize + col(relative_to);
     } else if (type == ActionType::kMove) {
-        return !inBoard(from) || !inBoard(to) ? -1 : kshogi66SetupActionSize + ((from * kshogi66BoardArea + to) * 2 + static_cast<int>(promote));
+        auto it = getEncodedMoveIndex().find(moveKey(from, to, promote));
+        return it == getEncodedMoveIndex().end() ? -1 : kshogi66SetupActionSize + it->second;
     } else if (type == ActionType::kDrop) {
-        int id = handPieceToActionId(piece_type);
-        return id < 0 || !inBoard(to) ? -1 : kshogi66SetupActionSize + kshogi66MoveActionSize + id * kshogi66BoardArea + to;
+        int relative_to = toRelativePosition(to, player);
+        auto it = getEncodedDropIndex().find(dropKey(piece_type, relative_to));
+        return it == getEncodedDropIndex().end() ? -1 : kshogi66SetupActionSize + kshogi66MoveActionSize + it->second;
     }
     return -1;
 }
@@ -209,24 +385,25 @@ void shogi66Action::decodeActionId()
     int id = action_id_;
     if (0 <= id && id < kshogi66SetupActionSize) {
         type_ = ActionType::kSetup;
-        piece_type_ = setupActionIdToPieceType(id / kshogi66BoardArea);
+        piece_type_ = setupActionIdToPieceType(id / kshogi66BoardSize);
         from_ = -1;
-        to_ = id % kshogi66BoardArea;
+        to_ = fromRelativePosition(id % kshogi66BoardSize, player_);
         promote_ = false;
     } else if (kshogi66SetupActionSize <= id && id < kshogi66SetupActionSize + kshogi66MoveActionSize) {
         id -= kshogi66SetupActionSize;
+        const EncodedMove& move = getEncodedMoves()[id];
         type_ = ActionType::kMove;
-        promote_ = (id % 2) != 0;
-        id >>= 1;
-        from_ = id / kshogi66BoardArea;
-        to_ = id % kshogi66BoardArea;
+        promote_ = move.promote;
+        from_ = move.from;
+        to_ = move.to;
         piece_type_ = PieceType::kEmpty;
     } else if (kshogi66SetupActionSize + kshogi66MoveActionSize <= id && id < kshogi66PolicySize) {
         id -= kshogi66SetupActionSize + kshogi66MoveActionSize;
+        const EncodedDrop& drop = getEncodedDrops()[id];
         type_ = ActionType::kDrop;
-        piece_type_ = handActionIdToPieceType(id / kshogi66BoardArea);
+        piece_type_ = drop.piece_type;
         from_ = -1;
-        to_ = id % kshogi66BoardArea;
+        to_ = fromRelativePosition(drop.relative_to, player_);
         promote_ = false;
     }
 }
@@ -289,7 +466,11 @@ void shogi66Env::reset()
 bool shogi66Env::act(const shogi66Action& action)
 {
     if (!isLegalAction(action)) return false;
+    return actNoCheck(action);
+}
 
+bool shogi66Env::actNoCheck(const shogi66Action& action)
+{
     actions_.push_back(action);
     applyActionNoCheck(action);
     if (winner_ == Player::kPlayerNone) winner_ = winnerByMissingKing();
@@ -315,33 +496,19 @@ std::vector<shogi66Action> shogi66Env::getLegalActions() const
 std::vector<shogi66Action> shogi66Env::getLegalActions(bool check_pawn_drop_mate) const
 {
     std::vector<shogi66Action> actions;
-    if (winner_ != Player::kPlayerNone) return actions;
+    if (winner_ != Player::kPlayerNone) { return actions; }
     if (phase_ == Phase::kSetup) {
-        for (int piece = 0; piece < kshogi66SetupPieceTypes; piece++) {
-            PieceType type = shogi66Action::setupActionIdToPieceType(piece);
-            for (int to = 0; to < kshogi66BoardArea; to++) {
-                shogi66Action action(ActionType::kSetup, type, -1, to, false, turn_);
-                if (isLegalAction(action, check_pawn_drop_mate)) actions.push_back(action);
-            }
+        for (const shogi66Action& action : getSetupActionList(turn_)) {
+            if (isLegalAction(action, check_pawn_drop_mate)) actions.push_back(action);
         }
         return actions;
     }
-    for (int from = 0; from < kshogi66BoardArea; from++) {
-        if (board_[from].owner != turn_) continue;
-        for (int to = 0; to < kshogi66BoardArea; to++) {
-            if (to == from) continue;
-            for (bool promote_move : {false, true}) {
-                shogi66Action action(ActionType::kMove, PieceType::kEmpty, from, to, promote_move, turn_);
-                if (isLegalAction(action, check_pawn_drop_mate)) actions.push_back(action);
-            }
-        }
+    for (const shogi66Action& action : getMoveActionList(turn_)) {
+        if (board_[action.getFrom()].owner != turn_) continue;
+        if (isLegalAction(action, check_pawn_drop_mate)) actions.push_back(action);
     }
-    for (int piece = 0; piece < kshogi66HandPieceTypes; piece++) {
-        PieceType type = shogi66Action::handActionIdToPieceType(piece);
-        for (int to = 0; to < kshogi66BoardArea; to++) {
-            shogi66Action action(ActionType::kDrop, type, -1, to, false, turn_);
-            if (isLegalAction(action, check_pawn_drop_mate)) actions.push_back(action);
-        }
+    for (const shogi66Action& action : getDropActionList(turn_)) {
+        if (isLegalAction(action, check_pawn_drop_mate)) actions.push_back(action);
     }
     return actions;
 }
@@ -352,6 +519,34 @@ bool shogi66Env::isLegalAction(const shogi66Action& action) const
 }
 
 bool shogi66Env::isLegalAction(const shogi66Action& action, bool check_pawn_drop_mate) const
+{
+    if (action.getPlayer() != turn_ || action.getActionID() < 0 || !inBoard(action.getTo())) return false;
+    if (phase_ == Phase::kSetup) return action.getType() == ActionType::kSetup && isLegalSetupAction(action);
+    if (action.getType() == ActionType::kSetup) return false;
+    if (action.getType() == ActionType::kMove && !isLegalMove(action)) return false;
+    if (action.getType() == ActionType::kDrop && !isLegalDrop(action)) return false;
+
+    bool legal = !isKingInCheckAfterAction(action, turn_);
+    bool gives_check = legal && isKingInCheckAfterAction(action, action.nextPlayer());
+    if (legal && gives_check) {
+        shogi66Env nxt = *this;
+        nxt.applyActionNoCheck(action);
+        nxt.turn_ = action.nextPlayer();
+        auto it = state_count_.find(nxt.stateKey());
+        if (it != state_count_.end() && it->second >= 3) legal = false;
+    }
+    if (legal && check_pawn_drop_mate && gives_check &&
+        action.getType() == ActionType::kDrop && action.getPieceType() == PieceType::kPawn && isPawnDropMate(action)) {
+        legal = false;
+    }
+
+#ifdef SHOGI66_VERIFY_FAST_LEGAL
+    assert(legal == isLegalActionSlow(action, check_pawn_drop_mate));
+#endif
+    return legal;
+}
+
+bool shogi66Env::isLegalActionSlow(const shogi66Action& action, bool check_pawn_drop_mate) const
 {
     if (action.getPlayer() != turn_ || action.getActionID() < 0 || !inBoard(action.getTo())) return false;
     if (phase_ == Phase::kSetup) return action.getType() == ActionType::kSetup && isLegalSetupAction(action);
@@ -473,6 +668,81 @@ bool shogi66Env::attacksSquare(int from, int to) const
     }
 }
 
+Piece shogi66Env::getPieceAfterAction(const shogi66Action& action, int pos) const
+{
+    if (!inBoard(pos)) return Piece();
+
+    if (action.getType() == ActionType::kSetup) {
+        return pos == action.getTo() ? Piece(action.getPlayer(), action.getPieceType()) : board_[pos];
+    }
+    if (action.getType() == ActionType::kDrop) {
+        return pos == action.getTo() ? Piece(action.getPlayer(), action.getPieceType()) : board_[pos];
+    }
+    if (action.getType() != ActionType::kMove) return board_[pos];
+    if (pos == action.getFrom()) return Piece();
+    if (pos != action.getTo()) return board_[pos];
+
+    Piece piece = board_[action.getFrom()];
+    if (action.isPromote()) piece.type = promoted(piece.type);
+    return piece;
+}
+
+bool shogi66Env::attacksSquareAfterAction(const shogi66Action& action, int from, int to) const
+{
+    Piece piece = getPieceAfterAction(action, from);
+    if (!isPlayer(piece.owner) || !inBoard(to) || from == to) return false;
+
+    int dr = row(to) - row(from);
+    int dc = col(to) - col(from);
+    int forward = dir(piece.owner);
+
+    auto check_line = [&]() {
+        int sr = dr == 0 ? 0 : (dr > 0 ? 1 : -1);
+        int sc = dc == 0 ? 0 : (dc > 0 ? 1 : -1);
+        int r = row(from) + sr;
+        int c = col(from) + sc;
+        while (r != row(to) || c != col(to)) {
+            if (getPieceAfterAction(action, r * kshogi66BoardSize + c).owner != Player::kPlayerNone) return false;
+            r += sr, c += sc;
+        }
+        return true;
+    };
+
+    switch (piece.type) {
+        case PieceType::kKing:
+            return std::max(std::abs(dr), std::abs(dc)) == 1;
+        case PieceType::kGold:
+        case PieceType::kPromSilver:
+        case PieceType::kPromKnight:
+        case PieceType::kPromLance:
+        case PieceType::kTokin:
+            return (dr == forward && std::abs(dc) <= 1) ||
+                   (dr == 0 && std::abs(dc) == 1) ||
+                   (dr == -forward && dc == 0);
+        case PieceType::kSilver:
+            return (dr == forward && std::abs(dc) <= 1) ||
+                   (dr == -forward && std::abs(dc) == 1);
+        case PieceType::kKnight:
+            return dr == 2 * forward && std::abs(dc) == 1;
+        case PieceType::kLance:
+            return dc == 0 && dr * forward > 0 && check_line();
+        case PieceType::kRook:
+            return (dr == 0 || dc == 0) && check_line();
+        case PieceType::kBishop:
+            return std::abs(dr) == std::abs(dc) && check_line();
+        case PieceType::kDragon:
+            return ((dr == 0 || dc == 0) && check_line()) ||
+                   (std::abs(dr) == std::abs(dc) && std::abs(dr) == 1);
+        case PieceType::kHorse:
+            return (std::abs(dr) == std::abs(dc) && check_line()) ||
+                   ((std::abs(dr) == 1 && dc == 0) || (dr == 0 && std::abs(dc) == 1));
+        case PieceType::kPawn:
+            return dr == forward && dc == 0;
+        default:
+            return false;
+    }
+}
+
 bool shogi66Env::isKingInCheck(Player player) const
 {
     int king = -1;
@@ -486,6 +756,25 @@ bool shogi66Env::isKingInCheck(Player player) const
     Player opponent = getNextPlayer(player, kshogi66NumPlayer);
     for (int pos = 0; pos < kshogi66BoardArea; pos++) {
         if (board_[pos].owner == opponent && attacksSquare(pos, king)) return true;
+    }
+    return false;
+}
+
+bool shogi66Env::isKingInCheckAfterAction(const shogi66Action& action, Player player) const
+{
+    int king = -1;
+    for (int pos = 0; pos < kshogi66BoardArea; pos++) {
+        Piece piece = getPieceAfterAction(action, pos);
+        if (piece.owner == player && piece.type == PieceType::kKing) {
+            king = pos;
+            break;
+        }
+    }
+    if (king < 0) return true;
+
+    Player opponent = getNextPlayer(player, kshogi66NumPlayer);
+    for (int pos = 0; pos < kshogi66BoardArea; pos++) {
+        if (getPieceAfterAction(action, pos).owner == opponent && attacksSquareAfterAction(action, pos, king)) return true;
     }
     return false;
 }
