@@ -867,6 +867,10 @@ float shogi66Env::getEvalScore(bool is_resign) const
 std::vector<float> shogi66Env::getFeatures(utils::Rotation rotation) const
 {
     const int spatial = kshogi66BoardArea;
+    constexpr int kOwnAttackCountChannel = 44;
+    constexpr int kOppAttackCountChannel = 45;
+    constexpr int kOwnAttackBinaryChannel = 46;
+    constexpr int kOppAttackBinaryChannel = 47;
     std::vector<float> features(getNumInputChannels() * spatial, 0.0f);
     auto piece = [&](PieceType type) {
         switch (type) {
@@ -907,6 +911,27 @@ std::vector<float> shogi66Env::getFeatures(utils::Rotation rotation) const
     for (int pos = 0; pos < spatial; pos++) {
         features[42 * spatial + pos] = turn_ == Player::kPlayer1 ? 1.0f : 0.0f;
         features[43 * spatial + pos] = phase_ == Phase::kSetup ? 1.0f : 0.0f;
+    }
+
+    std::array<int, kshogi66BoardArea> own_attack_count{};
+    std::array<int, kshogi66BoardArea> opp_attack_count{};
+    for (int from = 0; from < spatial; ++from) {
+        const Piece& p = board_[from];
+        if (p.owner != turn_ && p.owner != nxt_player) continue;
+        for (int to = 0; to < spatial; ++to) {
+            if (from == to || !attacksSquare(from, to)) continue;
+            if (p.owner == turn_) {
+                ++own_attack_count[to];
+            } else {
+                ++opp_attack_count[to];
+            }
+        }
+    }
+    for (int pos = 0; pos < spatial; ++pos) {
+        features[kOwnAttackCountChannel * spatial + pos] = std::min(own_attack_count[pos], 3) / 3.0f;
+        features[kOppAttackCountChannel * spatial + pos] = std::min(opp_attack_count[pos], 3) / 3.0f;
+        features[kOwnAttackBinaryChannel * spatial + pos] = own_attack_count[pos] > 0 ? 1.0f : 0.0f;
+        features[kOppAttackBinaryChannel * spatial + pos] = opp_attack_count[pos] > 0 ? 1.0f : 0.0f;
     }
     return features;
 }

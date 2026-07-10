@@ -103,7 +103,7 @@ public:
     float getEvalScore(bool is_resign = false) const override;
     std::vector<float> getFeatures(utils::Rotation rotation = utils::Rotation::kRotationNone) const override;
     std::vector<float> getActionFeatures(const shogi66Action& action, utils::Rotation rotation = utils::Rotation::kRotationNone) const override;
-    inline int getNumInputChannels() const override { return 44; }
+    inline int getNumInputChannels() const override { return 48; }
     inline int getPolicySize() const override { return kshogi66PolicySize; }
 
     std::string toString() const override;
