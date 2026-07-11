@@ -186,6 +186,7 @@ void ZeroActor::setNetwork(const std::shared_ptr<network::Network>& network)
         if (config::actor_use_gumbel) { throw std::runtime_error("multiplayer Gumbel search is not validated yet"); }
         if (config::actor_mcts_value_rescale) { throw std::runtime_error("multiplayer value rescaling is not supported yet"); }
         if (config::zero_disable_resign_ratio < 1.0f) { throw std::runtime_error("multiplayer resignation must be disabled"); }
+        if (config::zero_actor_intermediate_sequence_length != 0) { throw std::runtime_error("multiplayer intermediate self-play sequences are not supported yet"); }
     }
 }
 
