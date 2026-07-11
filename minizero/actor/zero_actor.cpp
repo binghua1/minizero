@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <memory>
+#include <stdexcept>
 #include <type_traits>
 #include <unordered_map>
 #include <utility>
@@ -178,6 +179,14 @@ void ZeroActor::setNetwork(const std::shared_ptr<network::Network>& network)
         assert(false);
     }
     assert((alphazero_network_ && !muzero_network_) || (!alphazero_network_ && muzero_network_));
+
+    if (env_.getNumPlayer() > 2) {
+        if (!alphazero_network_) { throw std::runtime_error("multiplayer environments currently support AlphaZero only"); }
+        if (network->getNumPlayers() != env_.getNumPlayer()) { throw std::runtime_error("network and environment player counts do not match"); }
+        if (config::actor_use_gumbel) { throw std::runtime_error("multiplayer Gumbel search is not validated yet"); }
+        if (config::actor_mcts_value_rescale) { throw std::runtime_error("multiplayer value rescaling is not supported yet"); }
+        if (config::zero_disable_resign_ratio < 1.0f) { throw std::runtime_error("multiplayer resignation must be disabled"); }
+    }
 }
 
 std::vector<std::pair<std::string, std::string>> ZeroActor::getActionInfo() const

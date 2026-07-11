@@ -5,6 +5,7 @@
 #include "rotation.h"
 #include <algorithm>
 #include <fstream>
+#include <stdexcept>
 #include <utility>
 
 namespace minizero::learner {
@@ -205,6 +206,13 @@ DataLoader::DataLoader(const std::string& conf_file_name)
     config::ConfigureLoader cl;
     config::setConfiguration(cl);
     cl.loadFromFile(conf_file_name);
+
+    Environment env;
+    if (env.getNumPlayer() > 2) {
+        if (config::nn_type_name != "alphazero") { throw std::runtime_error("multiplayer training currently supports AlphaZero only"); }
+        if (env.getDiscreteValueSize() != 1) { throw std::runtime_error("multiplayer categorical values are not supported yet"); }
+        if (config::learner_use_per) { throw std::runtime_error("multiplayer prioritized replay is not supported yet"); }
+    }
 }
 
 void DataLoader::initialize()

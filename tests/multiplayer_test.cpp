@@ -1,0 +1,51 @@
+#include "mcts.h"
+#include "tictacmo.h"
+#include <cassert>
+#include <vector>
+
+int main()
+{
+    using namespace minizero;
+    using namespace minizero::actor;
+    using namespace minizero::env;
+    using namespace minizero::env::tictacmo;
+
+    assert(getNextPlayer(Player::kPlayer1, 3) == Player::kPlayer2);
+    assert(getNextPlayer(Player::kPlayer2, 3) == Player::kPlayer3);
+    assert(getNextPlayer(Player::kPlayer3, 3) == Player::kPlayer1);
+    assert(getPreviousPlayer(Player::kPlayer1, 3) == Player::kPlayer3);
+
+    TicTacMoEnv env;
+    const int moves[] = {0, 5, 10, 1, 6, 11, 2};
+    for (int move : moves) { assert(env.act(TicTacMoAction(move, env.getTurn()))); }
+    assert(env.isTerminal());
+    assert(env.getLegalActions().empty());
+    const PlayerValues terminal_values = env.getEvalScores();
+    assert(terminal_values[0] == 1.0f && terminal_values[1] == -1.0f && terminal_values[2] == -1.0f);
+    assert(env.getFeatures().size() == 90);
+
+    TicTacMoEnvLoader loader;
+    loader.loadFromEnvironment(env);
+    TicTacMoEnvLoader loaded;
+    assert(loaded.loadFromString(loader.toString()));
+    assert(loaded.getActionPairs().size() == 7);
+    assert(loaded.getValue(0) == std::vector<float>({1.0f, -1.0f, -1.0f}));
+
+    MCTS mcts(8);
+    mcts.reset();
+    mcts.setRootPlayer(Player::kPlayer1);
+    MCTSNode* root = mcts.getRootNode();
+    mcts.expand(root, {{Action(0, Player::kPlayer1), 1.0f, 0.0f}});
+    MCTSNode* player1_edge = root->getChild(0);
+    mcts.expand(player1_edge, {{Action(1, Player::kPlayer2), 1.0f, 0.0f}});
+    MCTSNode* player2_edge = player1_edge->getChild(0);
+    mcts.expand(player2_edge, {{Action(2, Player::kPlayer3), 1.0f, 0.0f}});
+    MCTSNode* player3_edge = player2_edge->getChild(0);
+    const PlayerValues search_values{1.0f, -0.25f, -0.75f};
+    mcts.backup({root, player1_edge, player2_edge, player3_edge}, search_values);
+    assert(root->getMean() == 1.0f);
+    assert(player1_edge->getMean() == 1.0f);
+    assert(player2_edge->getMean() == -0.25f);
+    assert(player3_edge->getMean() == -0.75f);
+    return 0;
+}

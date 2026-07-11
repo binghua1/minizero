@@ -2,6 +2,8 @@ cmake_minimum_required(VERSION 3.16)
 
 project(minizero)
 
+option(MINIZERO_BUILD_TESTS "Build MiniZero tests" OFF)
+
 # specify the C++ standard
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
@@ -29,6 +31,10 @@ add_subdirectory(minizero/learner)
 add_subdirectory(minizero/network)
 add_subdirectory(minizero/utils)
 add_subdirectory(minizero/zero)
+if(MINIZERO_BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+endif()
 
 string(TOLOWER "${PROJECT_NAME}_${GAME_TYPE}" EXE_FILE_NAME)
 set_target_properties(${PROJECT_NAME} PROPERTIES OUTPUT_NAME ${EXE_FILE_NAME})
