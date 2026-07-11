@@ -6,6 +6,7 @@
 #include "utils.h"
 #include "vector_map.h"
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <fstream>
 #include <memory>
@@ -18,18 +19,30 @@ namespace minizero::env {
 
 using namespace minizero;
 
-// only support up to two players currently
+constexpr int kMaxNumPlayers = 6;
+
 enum class Player {
     kPlayerNone = 0,
     kPlayer1 = 1,
     kPlayer2 = 2,
-    kPlayerSize = 3
+    kPlayer3 = 3,
+    kPlayer4 = 4,
+    kPlayer5 = 5,
+    kPlayer6 = 6,
+    kPlayerSize = 7
 };
+
+using PlayerValues = std::array<float, kMaxNumPlayers>;
 
 char playerToChar(Player p);
 Player charToPlayer(char c);
 Player getNextPlayer(Player player, int num_player);
 Player getPreviousPlayer(Player player, int num_player);
+int playerToIndex(Player player);
+Player indexToPlayer(int player_index);
+std::string playerValuesToString(const PlayerValues& values, int num_player);
+PlayerValues stringToPlayerValues(const std::string& value_string, int num_player);
+std::vector<float> playerValuesToVector(const PlayerValues& values, int num_player);
 
 class BaseAction {
 public:
@@ -84,6 +97,18 @@ public:
     virtual bool isTerminal() const = 0;
     virtual float getReward() const = 0;
     virtual float getEvalScore(bool is_resign = false) const = 0;
+    virtual PlayerValues getEvalScores(bool is_resign = false) const
+    {
+        PlayerValues values{};
+        const float score = getEvalScore(is_resign);
+        if (getNumPlayer() == 1) {
+            values[0] = score;
+        } else if (getNumPlayer() == 2) {
+            values[0] = score;
+            values[1] = -score;
+        }
+        return values;
+    }
     virtual std::vector<float> getFeatures(utils::Rotation rotation = utils::Rotation::kRotationNone) const = 0;
     virtual std::vector<float> getActionFeatures(const Action& action, utils::Rotation rotation = utils::Rotation::kRotationNone) const = 0;
     virtual int getNumInputChannels() const = 0;
