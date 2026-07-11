@@ -13,7 +13,7 @@ std::string GumbelZero::getMCTSPolicy(const std::shared_ptr<MCTS>& mcts) const
     for (int i = 0; i < mcts->getRootNode()->getNumChildren(); ++i) {
         MCTSNode* child = mcts->getRootNode()->getChild(i);
         if (child->getCount() == 0) { continue; }
-        float value = child->getNormalizedMean(mcts->getTreeValueBound());
+        float value = child->getNormalizedMean(mcts->getTreeValueBound(), mcts->usePlayerValueBackup());
         pi_sum += child->getPolicy();
         q_sum += child->getPolicy() * value;
     }
@@ -28,7 +28,9 @@ std::string GumbelZero::getMCTSPolicy(const std::shared_ptr<MCTS>& mcts) const
             value_pi = fmin(1, fmax(-1, 2 * value_pi - 1));
         }
     }
-    value_pi = (mcts->getRootNode()->getChild(0)->getAction().getPlayer() == env::charToPlayer(config::actor_mcts_value_flipping_player) ? -value_pi : value_pi);
+    if (!mcts->usePlayerValueBackup()) {
+        value_pi = (mcts->getRootNode()->getChild(0)->getAction().getPlayer() == env::charToPlayer(config::actor_mcts_value_flipping_player) ? -value_pi : value_pi);
+    }
     float non_visited_node_value = 1.0 / (1 + config::actor_num_simulation) * (value_pi + (config::actor_num_simulation / pi_sum) * q_sum);
 
     // calculate completed Q-values
@@ -38,7 +40,7 @@ std::string GumbelZero::getMCTSPolicy(const std::shared_ptr<MCTS>& mcts) const
     for (int i = 0; i < mcts->getRootNode()->getNumChildren(); ++i) { max_child_count = fmax(max_child_count, mcts->getRootNode()->getChild(i)->getCount()); }
     for (int i = 0; i < mcts->getRootNode()->getNumChildren(); ++i) {
         MCTSNode* child = mcts->getRootNode()->getChild(i);
-        float value = (child->getCount() == 0 ? non_visited_node_value : child->getNormalizedMean(mcts->getTreeValueBound()));
+        float value = (child->getCount() == 0 ? non_visited_node_value : child->getNormalizedMean(mcts->getTreeValueBound(), mcts->usePlayerValueBackup()));
         float logit_without_noise = child->getPolicyLogit() - child->getPolicyNoise();
         float score = logit_without_noise + (config::actor_gumbel_sigma_visit_c + max_child_count) * config::actor_gumbel_sigma_scale_c * value;
         new_logits.insert({child->getAction().getActionID(), score});
@@ -126,10 +128,10 @@ void GumbelZero::sortCandidatesByScore(const std::shared_ptr<MCTS>& mcts)
     auto& tree_value_bound = mcts->getTreeValueBound();
     sort(candidates_.begin(), candidates_.end(), [&](const MCTSNode* lhs, const MCTSNode* rhs) {
         float min_value = -std::numeric_limits<float>::max();
-        float lhs_value = lhs->getNormalizedMean(tree_value_bound);
+        float lhs_value = lhs->getNormalizedMean(tree_value_bound, mcts->usePlayerValueBackup());
         float lhs_score = lhs->getPolicyLogit() + (config::actor_gumbel_sigma_visit_c + max_child_count) * config::actor_gumbel_sigma_scale_c * lhs_value;
         lhs_score = (lhs->getCount() > 0 ? lhs_score : min_value);
-        float rhs_value = rhs->getNormalizedMean(tree_value_bound);
+        float rhs_value = rhs->getNormalizedMean(tree_value_bound, mcts->usePlayerValueBackup());
         float rhs_score = rhs->getPolicyLogit() + (config::actor_gumbel_sigma_visit_c + max_child_count) * config::actor_gumbel_sigma_scale_c * rhs_value;
         rhs_score = (rhs->getCount() > 0 ? rhs_score : min_value);
         return lhs_score > rhs_score;

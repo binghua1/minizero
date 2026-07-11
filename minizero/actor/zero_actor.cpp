@@ -91,6 +91,7 @@ void ZeroActor::resetSearch()
 {
     BaseActor::resetSearch();
     mcts_search_data_.clear();
+    getMCTS()->setRootPlayer(env_.getTurn());
     getMCTS()->getRootNode()->setAction(Action(-1, env::getPreviousPlayer(env_.getTurn(), env_.getNumPlayer())));
 }
 

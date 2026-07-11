@@ -21,8 +21,8 @@ public:
     void reset() override;
     virtual void add(float value, float weight = 1.0f);
     virtual void remove(float value, float weight = 1.0f);
-    virtual float getNormalizedMean(const std::map<float, int>& tree_value_bound) const;
-    virtual float getNormalizedPUCTScore(int total_simulation, const std::map<float, int>& tree_value_bound, float init_q_value = -1.0f) const;
+    virtual float getNormalizedMean(const std::map<float, int>& tree_value_bound, bool value_is_actor_relative = false) const;
+    virtual float getNormalizedPUCTScore(int total_simulation, const std::map<float, int>& tree_value_bound, float init_q_value = -1.0f, bool value_is_actor_relative = false) const;
     std::string toString() const override;
     bool displayInTreeLog() const override { return count_ > 0; }
 
@@ -95,6 +95,7 @@ public:
     virtual std::vector<MCTSNode*> selectFromNode(MCTSNode* start_node);
     virtual void expand(MCTSNode* leaf_node, const std::vector<ActionCandidate>& action_candidates);
     virtual void backup(const std::vector<MCTSNode*>& node_path, const float value, const float reward = 0.0f);
+    virtual void backup(const std::vector<MCTSNode*>& node_path, const env::PlayerValues& values);
 
     inline MCTSNode* allocateNodes(int size) { return static_cast<MCTSNode*>(Tree::allocateNodes(size)); }
     inline int getNumSimulation() const { return getRootNode()->getCount(); }
@@ -105,6 +106,9 @@ public:
     inline const TreeHiddenStateData& getTreeHiddenStateData() const { return tree_hidden_state_data_; }
     inline std::map<float, int>& getTreeValueBound() { return tree_value_bound_; }
     inline const std::map<float, int>& getTreeValueBound() const { return tree_value_bound_; }
+    inline void setRootPlayer(env::Player root_player) { root_player_ = root_player; }
+    inline env::Player getRootPlayer() const { return root_player_; }
+    inline bool usePlayerValueBackup() const { return use_player_value_backup_; }
 
 protected:
     TreeNode* createTreeNodes(uint64_t tree_node_size) override { return new MCTSNode[tree_node_size]; }
@@ -116,6 +120,8 @@ protected:
 
     std::map<float, int> tree_value_bound_;
     TreeHiddenStateData tree_hidden_state_data_;
+    env::Player root_player_;
+    bool use_player_value_backup_;
 };
 
 } // namespace minizero::actor

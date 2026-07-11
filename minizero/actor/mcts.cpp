@@ -37,7 +37,7 @@ void MCTSNode::remove(float value, float weight /* = 1.0f */)
     }
 }
 
-float MCTSNode::getNormalizedMean(const std::map<float, int>& tree_value_bound) const
+float MCTSNode::getNormalizedMean(const std::map<float, int>& tree_value_bound, bool value_is_actor_relative /* = false */) const
 {
     float value = reward_ + config::actor_mcts_reward_discount * mean_;
     if (config::actor_mcts_value_rescale) {
@@ -47,16 +47,18 @@ float MCTSNode::getNormalizedMean(const std::map<float, int>& tree_value_bound) 
         value = (value - value_lower_bound) / (value_upper_bound - value_lower_bound);
         value = fmin(1, fmax(-1, 2 * value - 1)); // normalize to [-1, 1]
     }
-    value = (action_.getPlayer() == env::charToPlayer(config::actor_mcts_value_flipping_player) ? -value : value); // flip value according to player
+    if (!value_is_actor_relative) {
+        value = (action_.getPlayer() == env::charToPlayer(config::actor_mcts_value_flipping_player) ? -value : value); // flip value according to player
+    }
     value = (value * count_ - virtual_loss_) / getCountWithVirtualLoss();    // value with virtual loss
     return value;
 }
 
-float MCTSNode::getNormalizedPUCTScore(int total_simulation, const std::map<float, int>& tree_value_bound, float init_q_value /* = -1.0f */) const
+float MCTSNode::getNormalizedPUCTScore(int total_simulation, const std::map<float, int>& tree_value_bound, float init_q_value /* = -1.0f */, bool value_is_actor_relative /* = false */) const
 {
     float puct_bias = config::actor_mcts_puct_init + log((1 + total_simulation + config::actor_mcts_puct_base) / config::actor_mcts_puct_base);
     float value_u = (puct_bias * getPolicy() * sqrt(total_simulation)) / (1 + getCountWithVirtualLoss());
-    float value_q = (getCountWithVirtualLoss() == 0 ? init_q_value : getNormalizedMean(tree_value_bound));
+    float value_q = (getCountWithVirtualLoss() == 0 ? init_q_value : getNormalizedMean(tree_value_bound, value_is_actor_relative));
     return value_u + value_q;
 }
 
@@ -79,12 +81,14 @@ void MCTS::reset()
     Tree::reset();
     tree_hidden_state_data_.reset();
     tree_value_bound_.clear();
+    root_player_ = env::Player::kPlayerNone;
+    use_player_value_backup_ = false;
 }
 
 bool MCTS::isResign(const MCTSNode* selected_node) const
 {
-    float root_win_rate = getRootNode()->getNormalizedMean(tree_value_bound_);
-    float action_win_rate = selected_node->getNormalizedMean(tree_value_bound_);
+    float root_win_rate = getRootNode()->getNormalizedMean(tree_value_bound_, use_player_value_backup_);
+    float action_win_rate = selected_node->getNormalizedMean(tree_value_bound_, use_player_value_backup_);
     return (-root_win_rate < config::actor_resign_threshold && action_win_rate < config::actor_resign_threshold);
 }
 
@@ -108,12 +112,12 @@ MCTSNode* MCTS::selectChildBySoftmaxCount(const MCTSNode* node, float temperatur
     assert(node && !node->isLeaf());
     MCTSNode* selected = nullptr;
     MCTSNode* best_child = selectChildByMaxCount(node);
-    float best_mean = best_child->getNormalizedMean(tree_value_bound_);
+    float best_mean = best_child->getNormalizedMean(tree_value_bound_, use_player_value_backup_);
     float sum = 0.0f;
     for (int i = 0; i < node->getNumChildren(); ++i) {
         MCTSNode* child = node->getChild(i);
         float count = std::pow(child->getCount(), 1 / temperature);
-        float mean = child->getNormalizedMean(tree_value_bound_);
+        float mean = child->getNormalizedMean(tree_value_bound_, use_player_value_backup_);
         if (count == 0 || (mean < best_mean - value_threshold)) { continue; }
         sum += count;
         float rand = utils::Random::randReal(sum);
@@ -178,6 +182,21 @@ void MCTS::backup(const std::vector<MCTSNode*>& node_path, const float value, co
     }
 }
 
+void MCTS::backup(const std::vector<MCTSNode*>& node_path, const env::PlayerValues& values)
+{
+    assert(!node_path.empty());
+    assert(root_player_ != env::Player::kPlayerNone);
+    use_player_value_backup_ = true;
+
+    for (int i = static_cast<int>(node_path.size()) - 1; i >= 0; --i) {
+        MCTSNode* node = node_path[i];
+        const env::Player perspective = (i == 0 ? root_player_ : node->getAction().getPlayer());
+        const float value = values[env::playerToIndex(perspective)];
+        node->add(value);
+        if (i == static_cast<int>(node_path.size()) - 1) { node->setValue(value); }
+    }
+}
+
 MCTSNode* MCTS::selectChildByPUCTScore(const MCTSNode* node) const
 {
     assert(node && !node->isLeaf());
@@ -187,7 +206,7 @@ MCTSNode* MCTS::selectChildByPUCTScore(const MCTSNode* node) const
     float best_score = std::numeric_limits<float>::lowest(), best_policy = std::numeric_limits<float>::lowest();
     for (int i = 0; i < node->getNumChildren(); ++i) {
         MCTSNode* child = node->getChild(i);
-        float score = child->getNormalizedPUCTScore(total_simulation, tree_value_bound_, init_q_value);
+        float score = child->getNormalizedPUCTScore(total_simulation, tree_value_bound_, init_q_value, use_player_value_backup_);
         if (score < best_score || (score == best_score && child->getPolicy() <= best_policy)) { continue; }
         best_score = score;
         best_policy = child->getPolicy();
@@ -205,7 +224,7 @@ float MCTS::calculateInitQValue(const MCTSNode* node) const
     for (int i = 0; i < node->getNumChildren(); ++i) {
         MCTSNode* child = node->getChild(i);
         if (child->getCountWithVirtualLoss() == 0) { continue; }
-        sum_of_win += child->getNormalizedMean(tree_value_bound_);
+        sum_of_win += child->getNormalizedMean(tree_value_bound_, use_player_value_backup_);
         sum += 1;
     }
 #if ATARI
