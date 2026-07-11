@@ -23,6 +23,7 @@ target_include_directories(
     rubiks
     santorini
     surakarta
+    tictacmo
     tictactoe
     stochastic
     shogi66
