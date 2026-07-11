@@ -147,8 +147,10 @@ void ZeroActor::afterNNEvaluation(const std::shared_ptr<NetworkOutput>& network_
             std::shared_ptr<AlphaZeroNetworkOutput> alphazero_output = std::static_pointer_cast<AlphaZeroNetworkOutput>(network_output);
             getMCTS()->expand(leaf_node, calculateAlphaZeroActionPolicy(env_transition, alphazero_output, feature_rotation_));
             env::PlayerValues values{};
-            assert(static_cast<int>(alphazero_output->values_.size()) == env_transition.getNumPlayer());
-            std::copy(alphazero_output->values_.begin(), alphazero_output->values_.end(), values.begin());
+            assert(static_cast<int>(alphazero_output->values_.size()) >= env_transition.getNumPlayer());
+            std::copy(alphazero_output->values_.begin(),
+                      alphazero_output->values_.begin() + env_transition.getNumPlayer(),
+                      values.begin());
             getMCTS()->backup(node_path, values);
         } else {
             getMCTS()->backup(node_path, env_transition.getEvalScores());
