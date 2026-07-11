@@ -16,7 +16,8 @@ class AlphaZeroNetwork(nn.Module):
                  num_blocks,
                  action_size,
                  num_value_hidden_channels,
-                 discrete_value_size):
+                 discrete_value_size,
+                 num_players=2):
         super(AlphaZeroNetwork, self).__init__()
         self.game_name = game_name
         self.num_input_channels = num_input_channels
@@ -29,13 +30,15 @@ class AlphaZeroNetwork(nn.Module):
         self.action_size = action_size
         self.num_value_hidden_channels = num_value_hidden_channels
         self.discrete_value_size = discrete_value_size
+        self.num_players = num_players
 
         self.conv = nn.Conv2d(num_input_channels, num_hidden_channels, kernel_size=3, padding=1)
         self.bn = nn.BatchNorm2d(num_hidden_channels)
         self.residual_blocks = nn.ModuleList([ResidualBlock(num_hidden_channels) for _ in range(num_blocks)])
         self.policy = PolicyNetwork(num_hidden_channels, hidden_channel_height, hidden_channel_width, action_size)
         if self.discrete_value_size == 1:
-            self.value = ValueNetwork(num_hidden_channels, hidden_channel_height, hidden_channel_width, num_value_hidden_channels)
+            value_output_size = num_players if num_players > 2 else 1
+            self.value = ValueNetwork(num_hidden_channels, hidden_channel_height, hidden_channel_width, num_value_hidden_channels, value_output_size)
         else:
             self.value = DiscreteValueNetwork(num_hidden_channels, hidden_channel_height, hidden_channel_width, num_value_hidden_channels, discrete_value_size)
 
@@ -86,6 +89,10 @@ class AlphaZeroNetwork(nn.Module):
     @torch.jit.export
     def get_discrete_value_size(self):
         return self.discrete_value_size
+
+    @torch.jit.export
+    def get_num_players(self):
+        return self.num_players
 
     def forward(self, state):
         x = self.conv(state)

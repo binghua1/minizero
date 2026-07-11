@@ -58,6 +58,12 @@ PYBIND11_MODULE(minizero_py, m)
     m.def("get_nn_action_size", []() { return getEnvInstance().getPolicySize(); });
     m.def("get_nn_num_value_hidden_channels", []() { return config::nn_num_value_hidden_channels; });
     m.def("get_nn_discrete_value_size", []() { return kEnvInstance->getDiscreteValueSize(); });
+    m.def("get_nn_num_players", []() { return getEnvInstance().getNumPlayer(); });
+    m.def("get_nn_value_output_size", []() {
+        return config::nn_type_name == "alphazero" && getEnvInstance().getNumPlayer() > 2
+                   ? getEnvInstance().getNumPlayer()
+                   : getEnvInstance().getDiscreteValueSize();
+    });
     m.def("get_nn_type_name", []() { return config::nn_type_name; });
 
     py::class_<learner::DataLoader>(m, "DataLoader")

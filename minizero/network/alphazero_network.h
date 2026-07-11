@@ -13,12 +13,14 @@ namespace minizero::network {
 class AlphaZeroNetworkOutput : public NetworkOutput {
 public:
     float value_;
+    std::vector<float> values_;
     std::vector<float> policy_;
     std::vector<float> policy_logits_;
 
-    AlphaZeroNetworkOutput(int policy_size)
+    AlphaZeroNetworkOutput(int policy_size, int num_players)
     {
         value_ = 0.0f;
+        values_.resize(num_players, 0.0f);
         policy_.resize(policy_size, 0.0f);
         policy_logits_.resize(policy_size, 0.0f);
     }
@@ -70,12 +72,13 @@ public:
         auto value_output = forward_result.at("value").toTensor().to(at::kCPU);
         assert(policy_output.numel() == batch_size_ * getActionSize());
         assert(policy_logits_output.numel() == batch_size_ * getActionSize());
-        assert(value_output.numel() == batch_size_ * getDiscreteValueSize());
+        const int value_output_size = (getNumPlayers() > 2 && getDiscreteValueSize() == 1 ? getNumPlayers() : getDiscreteValueSize());
+        assert(value_output.numel() == batch_size_ * value_output_size);
 
         const int policy_size = getActionSize();
         std::vector<std::shared_ptr<NetworkOutput>> network_outputs;
         for (int i = 0; i < batch_size_; ++i) {
-            network_outputs.emplace_back(std::make_shared<AlphaZeroNetworkOutput>(policy_size));
+            network_outputs.emplace_back(std::make_shared<AlphaZeroNetworkOutput>(policy_size, getNumPlayers()));
             auto alphazero_network_output = std::static_pointer_cast<AlphaZeroNetworkOutput>(network_outputs.back());
 
             // policy & policy logits
@@ -88,7 +91,16 @@ public:
 
             // value
             if (getDiscreteValueSize() == 1) {
-                alphazero_network_output->value_ = value_output[i].item<float>();
+                if (getNumPlayers() <= 2) {
+                    alphazero_network_output->value_ = value_output[i].item<float>();
+                    alphazero_network_output->values_[0] = alphazero_network_output->value_;
+                    if (getNumPlayers() == 2) { alphazero_network_output->values_[1] = -alphazero_network_output->value_; }
+                } else {
+                    std::copy(value_output.data_ptr<float>() + i * getNumPlayers(),
+                              value_output.data_ptr<float>() + (i + 1) * getNumPlayers(),
+                              alphazero_network_output->values_.begin());
+                    alphazero_network_output->value_ = alphazero_network_output->values_[0];
+                }
             } else {
                 int start_value = -getDiscreteValueSize() / 2;
                 alphazero_network_output->value_ = std::accumulate(value_output.data_ptr<float>() + i * getDiscreteValueSize(),
@@ -96,6 +108,8 @@ public:
                                                                    0.0f,
                                                                    [&start_value](const float& sum, const float& value) { return sum + value * start_value++; });
                 alphazero_network_output->value_ = utils::invertValue(alphazero_network_output->value_);
+                alphazero_network_output->values_[0] = alphazero_network_output->value_;
+                if (getNumPlayers() == 2) { alphazero_network_output->values_[1] = -alphazero_network_output->value_; }
             }
         }
 

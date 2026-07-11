@@ -24,11 +24,12 @@ class MinizeroDadaLoader:
         self.sampled_index = np.zeros(py.get_batch_size() * 2, dtype=np.int32)
         self.features = np.zeros(py.get_batch_size() * py.get_nn_num_input_channels() * py.get_nn_input_channel_height() * py.get_nn_input_channel_width(), dtype=np.float32)
         self.loss_scale = np.zeros(py.get_batch_size(), dtype=np.float32)
+        self.value_output_size = py.get_nn_value_output_size()
         self.value_accumulator = np.ones(1) if py.get_nn_discrete_value_size() == 1 else np.arange(-int(py.get_nn_discrete_value_size() / 2), int(py.get_nn_discrete_value_size() / 2) + 1)
         if py.get_nn_type_name() == "alphazero":
             self.action_features = None
             self.policy = np.zeros(py.get_batch_size() * py.get_nn_action_size(), dtype=np.float32)
-            self.value = np.zeros(py.get_batch_size() * py.get_nn_discrete_value_size(), dtype=np.float32)
+            self.value = np.zeros(py.get_batch_size() * self.value_output_size, dtype=np.float32)
             self.reward = None
         else:
             self.action_features = np.zeros(py.get_batch_size() * py.get_muzero_unrolling_step() * py.get_nn_num_action_feature_channels()
@@ -56,7 +57,10 @@ class MinizeroDadaLoader:
                                                                                                                  py.get_nn_hidden_channel_height(),
                                                                                                                  py.get_nn_hidden_channel_width()).to(device)
         policy = torch.FloatTensor(self.policy).view(py.get_batch_size(), -1, py.get_nn_action_size()).to(device)
-        value = torch.FloatTensor(self.value).view(py.get_batch_size(), -1, py.get_nn_discrete_value_size()).to(device)
+        if py.get_nn_type_name() == "alphazero":
+            value = torch.FloatTensor(self.value).view(py.get_batch_size(), 1, self.value_output_size).to(device)
+        else:
+            value = torch.FloatTensor(self.value).view(py.get_batch_size(), -1, py.get_nn_discrete_value_size()).to(device)
         reward = None if self.reward is None else torch.FloatTensor(self.reward).view(py.get_batch_size(), -1, py.get_nn_discrete_value_size()).to(device)
         loss_scale = torch.FloatTensor(self.loss_scale / np.amax(self.loss_scale)).to(device)
         sampled_index = self.sampled_index
@@ -90,7 +94,8 @@ class Model:
                                       py.get_nn_action_size(),
                                       py.get_nn_num_value_hidden_channels(),
                                       py.get_nn_discrete_value_size(),
-                                      py.get_nn_type_name())
+                                      py.get_nn_type_name(),
+                                      py.get_nn_num_players())
         self.network.to(self.device)
         if py.get_optimizer().lower() == "adam":
             self.optimizer = optim.Adam(self.network.parameters(),
@@ -136,7 +141,8 @@ def calculate_loss(network_output, label_policy, label_value, label_reward, loss
 
     # value
     if py.get_nn_discrete_value_size() == 1:
-        loss_value = (nn.functional.mse_loss(network_output["value"], label_value, reduction='none') * loss_scale).mean()
+        value_error = nn.functional.mse_loss(network_output["value"], label_value, reduction='none')
+        loss_value = (value_error.view(value_error.shape[0], -1).mean(dim=1) * loss_scale).mean()
     else:
         loss_value = -((label_value * nn.functional.log_softmax(network_output["value_logit"], dim=1)).sum(dim=1) * loss_scale).mean()
 
@@ -196,11 +202,11 @@ def train(model, training_dir, data_loader, start_iter, end_iter):
                 network_output = model.network(network_output["hidden_state"], action_features[:, i])
                 batch_values = np.concatenate((batch_values, network_output['value'].to('cpu').detach().numpy()), axis=0)
                 loss_step_policy, loss_step_value, loss_step_reward = calculate_loss(network_output, label_policy[:, i + 1], label_value[:, i + 1], label_reward[:, i], loss_scale)
-                add_training_info(training_info, f'loss_policy_{i+1}', loss_step_policy.item() / py.get_muzero_unrolling_step())
-                add_training_info(training_info, f'accuracy_policy_{i+1}', calculate_accuracy(network_output["policy_logit"], label_policy[:, i + 1], py.get_batch_size()))
-                add_training_info(training_info, f'loss_value_{i+1}', loss_step_value.item() / py.get_muzero_unrolling_step())
+                add_training_info(training_info, f'loss_policy_{i + 1}', loss_step_policy.item() / py.get_muzero_unrolling_step())
+                add_training_info(training_info, f'accuracy_policy_{i + 1}', calculate_accuracy(network_output["policy_logit"], label_policy[:, i + 1], py.get_batch_size()))
+                add_training_info(training_info, f'loss_value_{i + 1}', loss_step_value.item() / py.get_muzero_unrolling_step())
                 if "reward_logit" in network_output:
-                    add_training_info(training_info, f'loss_reward_{i+1}', loss_step_reward.item() / py.get_muzero_unrolling_step())
+                    add_training_info(training_info, f'loss_reward_{i + 1}', loss_step_reward.item() / py.get_muzero_unrolling_step())
                 loss_policy += loss_step_policy / py.get_muzero_unrolling_step()
                 loss_value += loss_step_value / py.get_muzero_unrolling_step()
                 loss_reward += loss_step_reward / py.get_muzero_unrolling_step()

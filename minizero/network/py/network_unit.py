@@ -43,14 +43,14 @@ class PolicyNetwork(nn.Module):
 
 
 class ValueNetwork(nn.Module):
-    def __init__(self, num_channels, channel_height, channel_width, num_value_hidden_channels):
+    def __init__(self, num_channels, channel_height, channel_width, num_value_hidden_channels, output_size=1):
         super(ValueNetwork, self).__init__()
         self.channel_height = channel_height
         self.channel_width = channel_width
         self.conv = nn.Conv2d(num_channels, 1, kernel_size=1)
         self.bn = nn.BatchNorm2d(1)
         self.fc1 = nn.Linear(channel_height * channel_width, num_value_hidden_channels)
-        self.fc2 = nn.Linear(num_value_hidden_channels, 1)
+        self.fc2 = nn.Linear(num_value_hidden_channels, output_size)
         self.tanh = nn.Tanh()
 
     def forward(self, x):
