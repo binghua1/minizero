@@ -18,8 +18,6 @@ public:
     std::string search_info_;
     MCTSNode* selected_node_ = nullptr;
     std::vector<MCTSNode*> node_path_;
-    Environment env_transition_;
-    bool has_env_transition_ = false;
     void clear();
 };
 

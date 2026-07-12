@@ -5,6 +5,7 @@
 #include <cassert>
 #include <memory>
 #include <stdexcept>
+#include <tuple>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -19,7 +20,6 @@ void MCTSSearchData::clear()
     search_info_ = "";
     selected_node_ = nullptr;
     node_path_.clear();
-    has_env_transition_ = false;
 }
 
 void ZeroActor::reset()
@@ -55,12 +55,10 @@ void ZeroActor::beforeNNEvaluation()
 {
     mcts_search_data_.node_path_ = selection();
     if (alphazero_network_) {
-        mcts_search_data_.env_transition_ = getEnvironmentTransition(mcts_search_data_.node_path_);
-        mcts_search_data_.has_env_transition_ = true;
+        Environment env_transition = getEnvironmentTransition(mcts_search_data_.node_path_);
         feature_rotation_ = config::actor_use_random_rotation_features ? static_cast<utils::Rotation>(utils::Random::randInt() % static_cast<int>(utils::Rotation::kRotateSize)) : utils::Rotation::kRotationNone;
-        nn_evaluation_batch_id_ = alphazero_network_->pushBack(mcts_search_data_.env_transition_.getFeatures(feature_rotation_));
+        nn_evaluation_batch_id_ = alphazero_network_->pushBack(env_transition.getFeatures(feature_rotation_));
     } else if (muzero_network_) {
-        mcts_search_data_.has_env_transition_ = false;
         if (getMCTS()->getNumSimulation() == 0) { // initial inference for root node
             nn_evaluation_batch_id_ = muzero_network_->pushBackInitialData(env_.getFeatures());
         } else { // for non-root nodes
@@ -81,8 +79,7 @@ void ZeroActor::afterNNEvaluation(const std::shared_ptr<NetworkOutput>& network_
     const std::vector<MCTSNode*>& node_path = mcts_search_data_.node_path_;
     MCTSNode* leaf_node = node_path.back();
     if (alphazero_network_) {
-        assert(mcts_search_data_.has_env_transition_);
-        const Environment& env_transition = mcts_search_data_.env_transition_;
+        Environment env_transition = getEnvironmentTransition(node_path);
         if (!env_transition.isTerminal()) {
             std::shared_ptr<AlphaZeroNetworkOutput> alphazero_output = std::static_pointer_cast<AlphaZeroNetworkOutput>(network_output);
             getMCTS()->expand(leaf_node, calculateAlphaZeroActionPolicy(env_transition, alphazero_output, feature_rotation_));
@@ -155,34 +152,21 @@ void ZeroActor::step()
                               (alphazero_network_ || num_simulation > 0) ? num_simulation_left : 1 /* initial inference for root node */);
     assert(batch_size > 0);
 
-    struct NNEvaluationQuery {
-        int batch_id_;
-        utils::Rotation feature_rotation_;
-        std::vector<MCTSNode*> node_path_;
-        Environment env_transition_;
-        bool has_env_transition_;
-    };
-    std::vector<NNEvaluationQuery> batch_queries;
+    std::vector<std::tuple<int, utils::Rotation, decltype(mcts_search_data_.node_path_)>> batch_queries; // batch id, rotation, search path
     for (int batch_id = 0; batch_id < batch_size; batch_id++) {
         beforeNNEvaluation();
         assert(nn_evaluation_batch_id_ == batch_id);
         if (mcts_search_data_.node_path_.back()->getVirtualLoss() == 0) {
-            batch_queries.push_back({nn_evaluation_batch_id_,
-                                     feature_rotation_,
-                                     mcts_search_data_.node_path_,
-                                     mcts_search_data_.env_transition_,
-                                     mcts_search_data_.has_env_transition_});
+            batch_queries.emplace_back(nn_evaluation_batch_id_, feature_rotation_, mcts_search_data_.node_path_);
         }
         for (auto node : mcts_search_data_.node_path_) { node->addVirtualLoss(); }
     }
     auto network_output = alphazero_network_ ? alphazero_network_->forward()
                                              : (num_simulation == 0 ? muzero_network_->initialInference() : muzero_network_->recurrentInference());
     for (auto& query : batch_queries) {
-        nn_evaluation_batch_id_ = query.batch_id_;
-        feature_rotation_ = query.feature_rotation_;
-        mcts_search_data_.node_path_ = query.node_path_;
-        mcts_search_data_.env_transition_ = query.env_transition_;
-        mcts_search_data_.has_env_transition_ = query.has_env_transition_;
+        nn_evaluation_batch_id_ = std::get<0>(query);
+        feature_rotation_ = std::get<1>(query);
+        mcts_search_data_.node_path_ = std::get<2>(query);
         afterNNEvaluation(network_output[nn_evaluation_batch_id_]);
         auto virtual_loss = mcts_search_data_.node_path_.back()->getVirtualLoss();
         for (auto node : mcts_search_data_.node_path_) { node->removeVirtualLoss(virtual_loss); }
