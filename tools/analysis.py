@@ -55,7 +55,7 @@ def get_myDict(lines, iter):
                 if key not in myDict:
                     myDict[key] = []
                 myDict[key].append(float(ret1[0][2]))
-                if re.findall(r'(\[SelfPlay Avg. Game Returns\])', line):
+                if re.findall(r'(\[SelfPlay Avg. (?:Game|P1) Returns\])', line):
                     myDict["[Iteration]"].append(counter)
                 continue
             ret2 = re.findall(r'((\[Iteration\])\s={5}(\d+)={5})', line)

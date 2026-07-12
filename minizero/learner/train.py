@@ -154,6 +154,12 @@ def calculate_loss(network_output, label_policy, label_value, label_reward, loss
     return loss_policy, loss_value, loss_reward
 
 
+def calculate_player_value_losses(network_output, label_value, loss_scale):
+    value_error = nn.functional.mse_loss(network_output["value"], label_value, reduction='none')
+    value_error = value_error.view(value_error.shape[0], -1)
+    return (value_error * loss_scale.view(-1, 1)).mean(dim=0)
+
+
 def add_training_info(training_info, key, value):
     if key not in training_info:
         training_info[key] = 0
@@ -188,6 +194,10 @@ def train(model, training_dir, data_loader, start_iter, end_iter):
             add_training_info(training_info, 'loss_policy', loss_policy.item())
             add_training_info(training_info, 'accuracy_policy', calculate_accuracy(network_output["policy_logit"], label_policy[:, 0], py.get_batch_size()))
             add_training_info(training_info, 'loss_value', loss_value.item())
+            if py.get_nn_num_players() > 2:
+                player_value_losses = calculate_player_value_losses(network_output, label_value[:, 0], loss_scale)
+                for player_index, player_value_loss in enumerate(player_value_losses):
+                    add_training_info(training_info, f'loss_value_player_{player_index + 1}', player_value_loss.item())
         elif py.get_nn_type_name() == "muzero":
             network_output = model.network(features)
             batch_values = network_output['value'].to('cpu').detach().numpy()
