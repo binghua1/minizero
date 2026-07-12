@@ -31,7 +31,7 @@ void ZeroActor::reset()
 void ZeroActor::resetSearch()
 {
     BaseActor::resetSearch();
-    mcts_search_data_.clear();
+    mcts_search_data_.node_path_.clear();
     getMCTS()->setRootPlayer(env_.getTurn());
     getMCTS()->getRootNode()->setAction(Action(-1, env::getPreviousPlayer(env_.getTurn(), env_.getNumPlayer())));
 }
@@ -264,11 +264,7 @@ std::vector<MCTS::ActionCandidate> ZeroActor::calculateMuZeroActionPolicy(MCTSNo
 Environment ZeroActor::getEnvironmentTransition(const std::vector<MCTSNode*>& node_path)
 {
     Environment env = env_;
-    for (size_t i = 1; i < node_path.size(); ++i) {
-        const bool replayed = env.act(node_path[i]->getAction());
-        assert(replayed);
-        (void)replayed;
-    }
+    for (size_t i = 1; i < node_path.size(); ++i) { env.act(node_path[i]->getAction()); }
     return env;
 }
 

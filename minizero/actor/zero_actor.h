@@ -16,7 +16,7 @@ namespace minizero::actor {
 class MCTSSearchData {
 public:
     std::string search_info_;
-    MCTSNode* selected_node_ = nullptr;
+    MCTSNode* selected_node_;
     std::vector<MCTSNode*> node_path_;
     void clear();
 };
