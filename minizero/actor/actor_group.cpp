@@ -25,6 +25,14 @@ void ThreadSharedData::outputGame(const std::shared_ptr<BaseActor>& actor)
 {
     int game_length = actor->getEnvironment().getActionHistory().size();
     std::pair<int, int> data_range = calculateTrainingDataRange(actor);
+    const Environment& environment = actor->getEnvironment();
+    const bool is_resign = !actor->isEnvTerminal();
+    std::ostringstream game_return;
+    if (environment.getNumPlayer() > 2) {
+        game_return << env::playerValuesToString(environment.getEvalScores(is_resign), environment.getNumPlayer());
+    } else {
+        game_return << environment.getEvalScore(is_resign);
+    }
 
     std::ostringstream oss;
     bool is_terminal = (config::zero_actor_intermediate_sequence_length == 0 || actor->isEnvTerminal());
@@ -32,7 +40,7 @@ void ThreadSharedData::outputGame(const std::shared_ptr<BaseActor>& actor)
         << (is_terminal ? "true" : "false") << " "                                                                         // is terminal
         << (data_range.second - data_range.first + 1) << " "                                                               // data length
         << game_length << " "                                                                                              // game length
-        << actor->getEnvironment().getEvalScore(!actor->isEnvTerminal()) << " "                                            // return
+        << game_return.str() << " "                                                                                        // return(s)
         << actor->getRecord({{"DLEN", std::to_string(data_range.first) + "-" + std::to_string(data_range.second)}}) << " " // game record
         << "#";                                                                                                            // end mark for a valid game
 

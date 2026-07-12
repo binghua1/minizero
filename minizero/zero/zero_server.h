@@ -36,6 +36,7 @@ public:
     int data_length_;
     int game_length_;
     float return_;
+    std::vector<float> returns_;
     std::string game_record_;
 
     ZeroSelfPlayData() {}
@@ -121,6 +122,7 @@ protected:
 
     std::vector<int> latest_game_lengths_;
     std::vector<float> latest_game_returns_;
+    std::vector<std::vector<float>> latest_game_player_returns_;
 };
 
 } // namespace minizero::zero

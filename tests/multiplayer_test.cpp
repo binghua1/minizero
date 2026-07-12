@@ -1,5 +1,6 @@
 #include "mcts.h"
 #include "tictacmo.h"
+#include "zero_server.h"
 #include <cassert>
 #include <vector>
 
@@ -47,5 +48,13 @@ int main()
     assert(player1_edge->getMean() == 1.0f);
     assert(player2_edge->getMean() == -0.25f);
     assert(player3_edge->getMean() == -0.75f);
+
+    zero::ZeroSelfPlayData multiplayer_data("SelfPlay true 10 10 1,-1,-1 (;GM[tictacmo]RE[1,-1,-1]) #");
+    assert(multiplayer_data.return_ == 1.0f);
+    assert(multiplayer_data.returns_ == std::vector<float>({1.0f, -1.0f, -1.0f}));
+
+    zero::ZeroSelfPlayData legacy_data("SelfPlay true 9 9 -1 (;GM[tictactoe]RE[-1]) #");
+    assert(legacy_data.return_ == -1.0f);
+    assert(legacy_data.returns_ == std::vector<float>({-1.0f}));
     return 0;
 }

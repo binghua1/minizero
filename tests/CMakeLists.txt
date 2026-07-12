@@ -1,5 +1,5 @@
 if(GAME_TYPE STREQUAL "TICTACMO")
     add_executable(multiplayer_test multiplayer_test.cpp)
-    target_link_libraries(multiplayer_test actor environment config utils)
+    target_link_libraries(multiplayer_test actor environment zero config utils)
     add_test(NAME multiplayer_test COMMAND multiplayer_test)
 endif()
