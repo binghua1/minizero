@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <memory>
 #include <mutex>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -73,7 +74,9 @@ public:
         assert(policy_output.numel() == batch_size_ * getActionSize());
         assert(policy_logits_output.numel() == batch_size_ * getActionSize());
         const int value_output_size = (getNumPlayers() > 2 && getDiscreteValueSize() == 1 ? getNumPlayers() : getDiscreteValueSize());
-        assert(value_output.numel() == batch_size_ * value_output_size);
+        if (value_output.numel() != batch_size_ * value_output_size) {
+            throw std::runtime_error("AlphaZero value output shape does not match the configured player count");
+        }
 
         const int policy_size = getActionSize();
         std::vector<std::shared_ptr<NetworkOutput>> network_outputs;
