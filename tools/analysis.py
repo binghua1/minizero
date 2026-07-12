@@ -10,6 +10,8 @@ import re
 from datetime import datetime
 plt.rcParams.update({'figure.max_open_warning': 100})
 
+PLAYER_COLORS = ['tab:blue', 'tab:orange', 'tab:green', 'tab:red', 'tab:purple', 'tab:brown']
+
 
 def eprint(*args, **kwargs):
     print(*args, file=sys.stderr, **kwargs, flush=True)
@@ -19,6 +21,44 @@ def get_time(log_entry):
     timestamp_pattern = r"\[(\d{4}/\d{2}/\d{2}_\d{2}:\d{2}:\d{2}\.\d{3})\]"
     time_str = re.search(timestamp_pattern, log_entry).group(1)
     return datetime.strptime(time_str, "%Y/%m/%d_%H:%M:%S.%f")
+
+
+def get_selfplay_plot_item(key):
+    match = re.search(r'\[SelfPlay (?:Min\.|Max\.|Avg\.) (.*?)\]', key)
+    if not match:
+        return None
+    metric = match.group(1)
+    player_return = re.fullmatch(r'(Latest \d+ )?P\d+ Returns', metric)
+    if player_return:
+        return f'{player_return.group(1) or ""}Player Returns'
+    if re.fullmatch(r'P\d+ Win Rate|Draw Rate', metric):
+        return 'Outcome Rates'
+    return metric.replace('Game ', '')
+
+
+def get_selfplay_plot_series(key, item):
+    if item.endswith('Player Returns'):
+        prefix = item[:-len('Player Returns')]
+        match = re.fullmatch(rf'\[SelfPlay Avg\. {re.escape(prefix)}P(\d+) Returns\]', key)
+        if not match:
+            return None
+        player_index = int(match.group(1)) - 1
+        color = PLAYER_COLORS[player_index % len(PLAYER_COLORS)]
+        return f'P{player_index + 1} Avg. Return', color
+
+    if item == 'Outcome Rates':
+        player_match = re.fullmatch(r'\[SelfPlay Avg\. P(\d+) Win Rate\]', key)
+        if player_match:
+            player_index = int(player_match.group(1)) - 1
+            color = PLAYER_COLORS[player_index % len(PLAYER_COLORS)]
+            return f'P{player_index + 1} Win Rate', color
+        if key == '[SelfPlay Avg. Draw Rate]':
+            return 'Draw Rate', 'tab:gray'
+        return None
+
+    if re.search(r'SelfPlay (?:Min\.|Max\.|Avg\.) ' + re.escape(item), key.replace('Game ', '')):
+        return key, ('red' if 'Avg.' in key else None)
+    return None
 
 
 def analysis(training_dir, path, iter: int = -1, all: bool = False, name: bool = False):
@@ -163,8 +203,8 @@ def analysis_(dir, path, iter, all: bool = False, name: bool = False):
     Training_log.close()
     # plt target
     myDict, learner_training_display_step, learner_training_step = get_myDict(lines, iter)
-    sp_items = list(set([re.search(r'\[SelfPlay (?:Min\.|Max\.|Avg\.) (.*?)\]', key).group(1).replace("Game ", "")
-                         for key in myDict if re.match(r'^\[SelfPlay (?:Min\.|Max\.|Avg\.) .*?\]', key)]))
+    sp_items = list(set([get_selfplay_plot_item(key)
+                         for key in myDict if get_selfplay_plot_item(key) is not None]))
     op_items = list(set([re.sub(r"_\d+$", "", key) for key in myDict if re.match(r'^(loss|accuracy)_', key)]))
     Fig_list = list(set(sp_items + op_items + ["Time"]))
     # plt figure
@@ -182,13 +222,14 @@ def analysis_(dir, path, iter, all: bool = False, name: bool = False):
         legend_fontsize = 30
         bool_print = False
         for key in sorted(myDict.keys()):
-            if re.search(r'SelfPlay (?:Min\.|Max\.|Avg\.) ' + item, key.replace("Game ", "")):
+            selfplay_series = get_selfplay_plot_series(key, item)
+            if selfplay_series is not None:
                 bool_print = True
                 step_interval = learner_training_step
                 legend_fontsize = min(legend_fontsize, 30 if len(key) <= 30 else 20)
-                linecolor = 'red' if "Avg." in key else None
-                ax1.plot([x * step_interval for x in myDict["[Iteration]"][-len(myDict[key]):]], myDict[key], label=f'{key}', linewidth=width, color=linecolor)
-                axs[counter_fig].plot([x * step_interval for x in myDict["[Iteration]"][-len(myDict[key]):]], myDict[key], label=f'{key}', linewidth=width, color=linecolor)
+                label, linecolor = selfplay_series
+                ax1.plot([x * step_interval for x in myDict["[Iteration]"][-len(myDict[key]):]], myDict[key], label=label, linewidth=width, color=linecolor)
+                axs[counter_fig].plot([x * step_interval for x in myDict["[Iteration]"][-len(myDict[key]):]], myDict[key], label=label, linewidth=width, color=linecolor)
                 ax1.yaxis.set_major_formatter(ticker.FuncFormatter(format_y_axis_labels))
             elif "SelfPlay" not in key and item in key:
                 bool_print = True
