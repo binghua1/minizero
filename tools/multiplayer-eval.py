@@ -591,7 +591,7 @@ def create_balanced_lineups(agent_names, num_players):
     return mixed or [list(lineups[0])]
 
 
-def create_auto_manifest(args, repo_root, training_dir, model, config, executable):
+def create_auto_manifest(args, repo_root, models, configs, executable):
     overrides = dict(DEFAULT_EVAL_OVERRIDES)
     if args.noise:
         overrides["actor_use_dirichlet_noise"] = "true"
@@ -601,7 +601,7 @@ def create_auto_manifest(args, repo_root, training_dir, model, config, executabl
     agents = []
     for search_type in args.search_types:
         agent_overrides = {
-            "nn_file_name": str(model),
+            "nn_file_name": str(models[search_type]),
             "actor_multiplayer_search_type": search_type,
             "program_seed": "{seed}",
             "program_auto_seed": "false",
@@ -614,7 +614,7 @@ def create_auto_manifest(args, repo_root, training_dir, model, config, executabl
             "env": {"OMP_NUM_THREADS": str(args.omp_num_threads)},
             "command": [
                 str(executable), "-mode", "console",
-                "-conf_file", str(config),
+                "-conf_file", str(configs[search_type]),
                 "-conf_str", conf_str,
             ],
         })
@@ -640,7 +640,11 @@ def auto_main(argv):
     parser.add_argument("game", help="MiniZero game type, for example tictacmo")
     parser.add_argument("training_dir", help="training folder containing a config and model/ weights")
     parser.add_argument("--model", help="model path, file name, or iteration number (default: latest iteration)")
+    parser.add_argument("--maxn-model", help="model used by the MaxN agent (default: --model)")
+    parser.add_argument("--paranoid-model", help="model used by the Paranoid agent (default: --model)")
     parser.add_argument("--conf-file", help="config path (default: newest *.cfg in the training folder)")
+    parser.add_argument("--maxn-conf-file", help="config used by the MaxN agent")
+    parser.add_argument("--paranoid-conf-file", help="config used by the Paranoid agent")
     parser.add_argument("--executable", help="engine executable (default: build/GAME/minizero_GAME)")
     parser.add_argument("--output", help="output directory (default: TRAINING_DIR/evaluation/MODEL_SEARCHES)")
     parser.add_argument("--search-types", nargs="+", default=["maxn", "paranoid"], choices=("maxn", "paranoid"))
@@ -672,24 +676,51 @@ def auto_main(argv):
     training_dir = Path(args.training_dir).resolve()
     if not training_dir.is_dir():
         parser.error(f"training directory not found: {training_dir}")
-    model = resolve_auto_model(training_dir, args.model)
-    config = resolve_auto_config(training_dir, args.conf_file)
+    common_model = resolve_auto_model(training_dir, args.model)
+    common_config = resolve_auto_config(training_dir, args.conf_file)
+    models = {}
+    configs = {}
+    for search_type in args.search_types:
+        model_argument = getattr(args, f"{search_type}_model")
+        models[search_type] = resolve_auto_model(training_dir, model_argument) if model_argument else common_model
+        config_argument = getattr(args, f"{search_type}_conf_file")
+        if config_argument:
+            configs[search_type] = resolve_auto_config(training_dir, config_argument)
+        elif model_argument and models[search_type].parent.name == "model":
+            configs[search_type] = resolve_auto_config(models[search_type].parent.parent, None)
+        else:
+            configs[search_type] = common_config
     executable = Path(args.executable).resolve() if args.executable else repo_root / "build" / args.game / f"minizero_{args.game}"
     if not executable.is_file():
         parser.error(f"engine executable not found: {executable}; build it before evaluation")
 
     search_label = "_vs_".join(args.search_types)
-    effective_simulations = args.num_simulations or read_config_value(config, "actor_num_simulation")
+    config_simulations = {
+        value for value in (read_config_value(configs[search_type], "actor_num_simulation") for search_type in args.search_types)
+        if value is not None
+    }
+    if args.num_simulations is None and len(config_simulations) > 1:
+        parser.error("agent configs use different actor_num_simulation values; set --num-simulations explicitly")
+    effective_simulations = args.num_simulations or (next(iter(config_simulations)) if config_simulations else None)
     simulation_label = f"_n{effective_simulations}" if effective_simulations else ""
     noise_label = "_noise" if args.noise else ""
+    if len(set(models.values())) == 1:
+        arena_label = f"{next(iter(models.values())).stem}_{search_label}"
+    else:
+        model_labels = []
+        for search_type in args.search_types:
+            model = models[search_type]
+            run_name = model.parent.parent.name if model.parent.name == "model" else model.parent.name
+            model_labels.append(f"{search_type}_{safe_name(run_name)}_{model.stem}")
+        arena_label = "_vs_".join(model_labels)
     output_dir = (
         Path(args.output).resolve()
         if args.output
-        else training_dir / "evaluation" / f"{model.stem}_{search_label}{simulation_label}{noise_label}"
+        else training_dir / "evaluation" / f"{arena_label}{simulation_label}{noise_label}"
     )
     output_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = output_dir / "arena.json"
-    manifest = create_auto_manifest(args, repo_root, training_dir, model, config, executable.resolve())
+    manifest = create_auto_manifest(args, repo_root, models, configs, executable.resolve())
     results_path = output_dir / "games.jsonl"
     if results_path.exists() and not (args.resume or args.overwrite or args.dry_run):
         raise FileExistsError(f"{results_path} exists; use --resume or --overwrite")
@@ -702,8 +733,9 @@ def auto_main(argv):
         json.dump(manifest, stream, indent=2)
         stream.write("\n")
     print(f"generated arena manifest: {manifest_path}", flush=True)
-    print(f"model: {model}", flush=True)
-    print(f"config: {config}", flush=True)
+    for search_type in args.search_types:
+        print(f"{search_type} model: {models[search_type]}", flush=True)
+        print(f"{search_type} config: {configs[search_type]}", flush=True)
 
     if args.dry_run:
         return

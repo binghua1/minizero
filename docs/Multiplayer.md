@@ -47,6 +47,17 @@ python3 tools/multiplayer-eval.py auto tictacmo tictacmo_maxn_smoke_02 \
 
 Auto mode selects the numerically latest `model/weight_iter_*.pt` and the newest `*.cfg`, locates `build/GAME/minizero_GAME`, creates the two balanced lineups `[maxn, maxn, paranoid]` and `[maxn, paranoid, paranoid]`, and evaluates all unique seat permutations. It saves the resolved manifest under `TRAINING_DIR/evaluation/WEIGHT_maxn_vs_paranoid_nSIM_noise/arena.json`. `--noise` enables identical Dirichlet-noise settings for both search algorithms, so repeated games vary while the fixed seeds keep the experiment reproducible. Use `--model 15000` to select an iteration, `--conf-file PATH` to select another config, and `--output PATH` to override the result directory. `--dry-run` only generates the manifest.
 
+To compare independently trained models without writing JSON, override either agent model:
+
+```bash
+python3 tools/multiplayer-eval.py auto tictacmo tictacmo_maxn_run \
+  --maxn-model tictacmo_maxn_run/model/weight_iter_15000.pt \
+  --paranoid-model tictacmo_paranoid_run/model/weight_iter_15000.pt \
+  --num-simulations 200 --noise --games-per-seating 20 -g 0123 --num_threads 1
+```
+
+When an agent-specific model is under a `TRAINING_DIR/model/` directory, auto mode also selects the newest `*.cfg` from that model's training directory. `--maxn-conf-file` and `--paranoid-conf-file` override those choices explicitly. MiniZero loads each `-conf_file` first, then applies the generated `-conf_str`; consequently the arena's model path, search type, simulation override, seed, noise, action selection, and multiplayer safety settings take precedence over values saved in the training config.
+
 The explicit JSON form below remains available for experiments involving different models or per-agent settings.
 
 Create a JSON manifest such as:

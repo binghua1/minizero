@@ -15,6 +15,45 @@ FAKE_ENGINE = REPO_ROOT / "tests" / "fake_multiplayer_engine.py"
 
 
 class MultiplayerEvalTest(unittest.TestCase):
+    def test_auto_mode_accepts_different_models_and_configs(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            maxn_run = temp / "maxn_run"
+            paranoid_run = temp / "paranoid_run"
+            for run, iteration in ((maxn_run, 100), (paranoid_run, 200)):
+                (run / "model").mkdir(parents=True)
+                (run / "run.cfg").write_text("actor_num_simulation=50\n")
+                (run / "model" / f"weight_iter_{iteration}.pt").touch()
+            output = temp / "evaluation"
+
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(ARENA),
+                    "auto",
+                    "tictacmo",
+                    str(maxn_run),
+                    "--paranoid-model",
+                    str(paranoid_run / "model" / "weight_iter_200.pt"),
+                    "--executable",
+                    str(FAKE_ENGINE),
+                    "--output",
+                    str(output),
+                    "--dry-run",
+                ],
+                cwd=REPO_ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            manifest = json.loads((output / "arena.json").read_text())
+            agents = {agent["name"]: agent for agent in manifest["agents"]}
+            self.assertIn(str(maxn_run / "model" / "weight_iter_100.pt"), agents["maxn"]["command"][-1])
+            self.assertIn(str(paranoid_run / "model" / "weight_iter_200.pt"), agents["paranoid"]["command"][-1])
+            self.assertEqual(agents["maxn"]["command"][-3], str((maxn_run / "run.cfg").resolve()))
+            self.assertEqual(agents["paranoid"]["command"][-3], str((paranoid_run / "run.cfg").resolve()))
+
     def test_auto_mode_generates_balanced_search_arena(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp = Path(temp_dir)
