@@ -11,6 +11,7 @@ import queue
 import re
 import shlex
 import subprocess
+import sys
 import threading
 import time
 from dataclasses import dataclass
@@ -18,6 +19,17 @@ from pathlib import Path
 
 
 PLAYER_CODES = ("b", "w", "r", "g", "y", "p")
+DEFAULT_EVAL_OVERRIDES = {
+    "actor_use_gumbel": "false",
+    "actor_use_gumbel_noise": "false",
+    "actor_use_dirichlet_noise": "false",
+    "actor_use_random_rotation_features": "false",
+    "actor_select_action_by_count": "true",
+    "actor_select_action_by_softmax_count": "false",
+    "actor_mcts_value_rescale": "false",
+    "zero_disable_resign_ratio": "1",
+    "zero_actor_intermediate_sequence_length": "0",
+}
 
 
 @dataclass(frozen=True)
@@ -524,6 +536,189 @@ def parse_gpu_list(value):
     return devices
 
 
+def find_latest_model(training_dir):
+    models = list((training_dir / "model").glob("weight_iter_*.pt"))
+    if not models:
+        raise FileNotFoundError(f"no weight_iter_*.pt found in {training_dir / 'model'}")
+
+    def model_key(path):
+        match = re.fullmatch(r"weight_iter_(\d+)\.pt", path.name)
+        return (int(match.group(1)) if match else -1, path.stat().st_mtime_ns)
+
+    return max(models, key=model_key)
+
+
+def resolve_auto_model(training_dir, value):
+    if value is None:
+        return find_latest_model(training_dir)
+    if value.isdigit():
+        value = f"weight_iter_{value}.pt"
+    path = Path(value)
+    candidates = [path] if path.is_absolute() else [training_dir / "model" / path, training_dir / path, path]
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate.resolve()
+    raise FileNotFoundError(f"model not found: {value}")
+
+
+def resolve_auto_config(training_dir, value):
+    if value is not None:
+        path = Path(value)
+        candidates = [path] if path.is_absolute() else [training_dir / path, path]
+        for candidate in candidates:
+            if candidate.is_file():
+                return candidate.resolve()
+        raise FileNotFoundError(f"config not found: {value}")
+    configs = list(training_dir.glob("*.cfg"))
+    if not configs:
+        raise FileNotFoundError(f"no *.cfg found in {training_dir}")
+    return max(configs, key=lambda path: path.stat().st_mtime_ns).resolve()
+
+
+def read_config_value(path, key):
+    pattern = re.compile(rf"^\s*{re.escape(key)}\s*=\s*([^#\s]+)")
+    with path.open() as stream:
+        for line in stream:
+            match = pattern.match(line)
+            if match:
+                return match.group(1)
+    return None
+
+
+def create_balanced_lineups(agent_names, num_players):
+    lineups = list(itertools.combinations_with_replacement(agent_names, num_players))
+    mixed = [list(lineup) for lineup in lineups if len(set(lineup)) > 1]
+    return mixed or [list(lineups[0])]
+
+
+def create_auto_manifest(args, repo_root, training_dir, model, config, executable):
+    overrides = dict(DEFAULT_EVAL_OVERRIDES)
+    if args.noise:
+        overrides["actor_use_dirichlet_noise"] = "true"
+    if args.num_simulations is not None:
+        overrides["actor_num_simulation"] = str(args.num_simulations)
+
+    agents = []
+    for search_type in args.search_types:
+        agent_overrides = {
+            "nn_file_name": str(model),
+            "actor_multiplayer_search_type": search_type,
+            "program_seed": "{seed}",
+            "program_auto_seed": "false",
+            **overrides,
+        }
+        conf_str = ":".join(f"{key}={value}" for key, value in agent_overrides.items())
+        agents.append({
+            "name": search_type,
+            "cwd": str(repo_root),
+            "env": {"OMP_NUM_THREADS": str(args.omp_num_threads)},
+            "command": [
+                str(executable), "-mode", "console",
+                "-conf_file", str(config),
+                "-conf_str", conf_str,
+            ],
+        })
+
+    return {
+        "game": args.game,
+        "players": list(PLAYER_CODES[:args.num_players]),
+        "agents": agents,
+        "lineups": create_balanced_lineups(args.search_types, args.num_players),
+        "seat_mode": "all_permutations",
+        "games_per_seating": args.games_per_seating,
+        "max_moves": args.max_moves if args.max_moves is not None else (15 if args.game == "tictacmo" else 2048),
+        "command_timeout": args.command_timeout,
+        "seed": args.seed,
+    }
+
+
+def auto_main(argv):
+    parser = argparse.ArgumentParser(
+        prog="multiplayer-eval.py auto",
+        description="Automatically create and run a seat-balanced multiplayer search arena.",
+    )
+    parser.add_argument("game", help="MiniZero game type, for example tictacmo")
+    parser.add_argument("training_dir", help="training folder containing a config and model/ weights")
+    parser.add_argument("--model", help="model path, file name, or iteration number (default: latest iteration)")
+    parser.add_argument("--conf-file", help="config path (default: newest *.cfg in the training folder)")
+    parser.add_argument("--executable", help="engine executable (default: build/GAME/minizero_GAME)")
+    parser.add_argument("--output", help="output directory (default: TRAINING_DIR/evaluation/MODEL_SEARCHES)")
+    parser.add_argument("--search-types", nargs="+", default=["maxn", "paranoid"], choices=("maxn", "paranoid"))
+    parser.add_argument("--num-players", type=int, default=3)
+    parser.add_argument("--num-simulations", type=int, help="override actor_num_simulation")
+    parser.add_argument("--noise", action="store_true", help="enable Dirichlet noise for varied reproducible games")
+    parser.add_argument("--games-per-seating", type=int, default=1)
+    parser.add_argument("--max-moves", type=int)
+    parser.add_argument("--command-timeout", type=float, default=300)
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--omp-num-threads", type=int, default=2)
+    parser.add_argument("-g", "--gpu", help="GPU list, for example 0123 or 0,1,2,3")
+    parser.add_argument("--num_threads", "--num-threads", "--threads", dest="num_threads", type=int, default=1)
+    parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument("--dry-run", action="store_true", help="only generate arena.json")
+    args = parser.parse_args(argv)
+    args.game = args.game.lower()
+
+    if not 2 <= args.num_players <= len(PLAYER_CODES):
+        parser.error(f"--num-players must be between 2 and {len(PLAYER_CODES)}")
+    if len(set(args.search_types)) != len(args.search_types):
+        parser.error("--search-types must not contain duplicates")
+    positive = (args.games_per_seating, args.command_timeout, args.omp_num_threads, args.num_threads)
+    if any(value <= 0 for value in positive) or (args.num_simulations is not None and args.num_simulations <= 0):
+        parser.error("game, timeout, thread, and simulation counts must be positive")
+
+    repo_root = Path(__file__).resolve().parents[1]
+    training_dir = Path(args.training_dir).resolve()
+    if not training_dir.is_dir():
+        parser.error(f"training directory not found: {training_dir}")
+    model = resolve_auto_model(training_dir, args.model)
+    config = resolve_auto_config(training_dir, args.conf_file)
+    executable = Path(args.executable).resolve() if args.executable else repo_root / "build" / args.game / f"minizero_{args.game}"
+    if not executable.is_file():
+        parser.error(f"engine executable not found: {executable}; build it before evaluation")
+
+    search_label = "_vs_".join(args.search_types)
+    effective_simulations = args.num_simulations or read_config_value(config, "actor_num_simulation")
+    simulation_label = f"_n{effective_simulations}" if effective_simulations else ""
+    noise_label = "_noise" if args.noise else ""
+    output_dir = (
+        Path(args.output).resolve()
+        if args.output
+        else training_dir / "evaluation" / f"{model.stem}_{search_label}{simulation_label}{noise_label}"
+    )
+    output_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = output_dir / "arena.json"
+    manifest = create_auto_manifest(args, repo_root, training_dir, model, config, executable.resolve())
+    results_path = output_dir / "games.jsonl"
+    if results_path.exists() and not (args.resume or args.overwrite or args.dry_run):
+        raise FileExistsError(f"{results_path} exists; use --resume or --overwrite")
+    if args.resume and manifest_path.exists():
+        with manifest_path.open() as stream:
+            previous_manifest = json.load(stream)
+        if previous_manifest != manifest:
+            raise ValueError(f"generated settings differ from the existing resume manifest: {manifest_path}")
+    with manifest_path.open("w") as stream:
+        json.dump(manifest, stream, indent=2)
+        stream.write("\n")
+    print(f"generated arena manifest: {manifest_path}", flush=True)
+    print(f"model: {model}", flush=True)
+    print(f"config: {config}", flush=True)
+
+    if args.dry_run:
+        return
+    run(argparse.Namespace(
+        manifest=str(manifest_path),
+        output=str(output_dir),
+        gpu=args.gpu,
+        num_threads=args.num_threads,
+        games_per_seating=None,
+        max_moves=None,
+        resume=args.resume,
+        overwrite=args.overwrite,
+    ))
+
+
 def run(args):
     config = load_manifest(args.manifest)
     if args.games_per_seating is not None:
@@ -604,6 +799,9 @@ def run(args):
 
 
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "auto":
+        auto_main(sys.argv[2:])
+        return
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("manifest", help="JSON arena manifest")
     parser.add_argument("output", help="output directory")

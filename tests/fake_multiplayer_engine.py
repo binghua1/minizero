@@ -13,7 +13,7 @@ def reply(payload=""):
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--num-players", type=int, default=3)
-args = parser.parse_args()
+args, _ = parser.parse_known_args()
 print(f"CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES', '')}", file=sys.stderr, flush=True)
 
 moves = []

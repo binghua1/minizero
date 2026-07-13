@@ -38,6 +38,17 @@ The test covers player rotation, a complete Tic-Tac-Mo win, vector-result record
 
 `tools/multiplayer-eval.py` runs one MiniZero console process per seat, forwards every move to the other engines, and balances seat advantage by evaluating fixed, cyclic, or all unique permutations of each lineup. Each agent can use a different model, configuration, simulation budget, or search algorithm.
 
+For the common case of comparing MaxN and Paranoid with the same trained model, use auto mode:
+
+```bash
+python3 tools/multiplayer-eval.py auto tictacmo tictacmo_maxn_smoke_02 \
+  --num-simulations 200 --noise --games-per-seating 20 -g 0 --num_threads 1
+```
+
+Auto mode selects the numerically latest `model/weight_iter_*.pt` and the newest `*.cfg`, locates `build/GAME/minizero_GAME`, creates the two balanced lineups `[maxn, maxn, paranoid]` and `[maxn, paranoid, paranoid]`, and evaluates all unique seat permutations. It saves the resolved manifest under `TRAINING_DIR/evaluation/WEIGHT_maxn_vs_paranoid_nSIM_noise/arena.json`. `--noise` enables identical Dirichlet-noise settings for both search algorithms, so repeated games vary while the fixed seeds keep the experiment reproducible. Use `--model 15000` to select an iteration, `--conf-file PATH` to select another config, and `--output PATH` to override the result directory. `--dry-run` only generates the manifest.
+
+The explicit JSON form below remains available for experiments involving different models or per-agent settings.
+
 Create a JSON manifest such as:
 
 ```json

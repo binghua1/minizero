@@ -15,6 +15,57 @@ FAKE_ENGINE = REPO_ROOT / "tests" / "fake_multiplayer_engine.py"
 
 
 class MultiplayerEvalTest(unittest.TestCase):
+    def test_auto_mode_generates_balanced_search_arena(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            training = temp / "tictacmo_run"
+            model_dir = training / "model"
+            model_dir.mkdir(parents=True)
+            (training / "run.cfg").write_text("actor_num_simulation=50\n")
+            (model_dir / "weight_iter_9.pt").touch()
+            (model_dir / "weight_iter_100.pt").touch()
+            output = temp / "evaluation"
+
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(ARENA),
+                    "auto",
+                    "tictacmo",
+                    str(training),
+                    "--executable",
+                    str(FAKE_ENGINE),
+                    "--output",
+                    str(output),
+                    "--num-simulations",
+                    "200",
+                    "--noise",
+                    "--games-per-seating",
+                    "2",
+                ],
+                cwd=REPO_ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            manifest = json.loads((output / "arena.json").read_text())
+            self.assertEqual([agent["name"] for agent in manifest["agents"]], ["maxn", "paranoid"])
+            self.assertEqual(
+                manifest["lineups"],
+                [["maxn", "maxn", "paranoid"], ["maxn", "paranoid", "paranoid"]],
+            )
+            self.assertEqual(manifest["max_moves"], 15)
+            for agent in manifest["agents"]:
+                conf_str = agent["command"][-1]
+                self.assertIn("weight_iter_100.pt", conf_str)
+                self.assertIn("actor_num_simulation=200", conf_str)
+                self.assertIn("actor_use_dirichlet_noise=true", conf_str)
+                self.assertIn(f"actor_multiplayer_search_type={agent['name']}", conf_str)
+            games = [json.loads(line) for line in (output / "games.jsonl").read_text().splitlines()]
+            self.assertEqual(len(games), 12)
+            self.assertTrue(all(not game["error"] for game in games))
+
     def test_all_permutations_and_summaries(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp = Path(temp_dir)
