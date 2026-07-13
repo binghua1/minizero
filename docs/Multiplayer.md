@@ -7,11 +7,50 @@ MiniZero's multiplayer AlphaZero path uses an absolute utility vector at network
 
 The neural network and terminal targets remain the same vector in both modes. Models trained with different search types should use separate training directories because their MCTS policy targets differ.
 
+## Paper implementation audit
+
+The four multiplayer extensions in [Petosa and Balch, *Multiplayer AlphaZero*](https://arxiv.org/pdf/1910.13012) are implemented in this branch:
+
+| Paper extension | MiniZero implementation |
+|---|---|
+| Rotate through every player instead of alternating two players | `getNextPlayer` and each multiplayer action rotate through all three players. |
+| Return a terminal score vector | Multiplayer environments and SGF/self-play records use `[P1, P2, P3]`, such as `[1, -1, -1]`. |
+| Back up the component belonging to the player selecting an edge | `MCTS::backup(PlayerValues)` implements player-relative MaxN. Paranoid is an additional baseline not used in the paper. |
+| Predict a value vector and train with vector MSE | The AlphaZero value head emits one value per player; the loader preserves the complete vector and the loss averages squared error across players. |
+
+This is an implementation of the paper's multiplayer algorithm, not an exact reproduction of its experimental system. The paper used an eight-block squeeze-and-excitation network, Adam with its reported hyperparameters, first-move-only Dirichlet noise, an unbounded replay buffer, and uninformed-MCTS controls. MiniZero retains its ResNet, training pipeline, replay policy, and root-noise behavior unless a separate replication experiment explicitly changes them.
+
 ## Tic-Tac-Mo
 
 Tic-Tac-Mo is the initial three-player correctness environment. Players take turns placing stones on an empty 3x5 board. The first player to place three stones consecutively in a horizontal, vertical, or diagonal line wins. A full board without a line is a draw. A win for player 1 has utility `[1, -1, -1]`; draws have utility `[0, 0, 0]`.
 
 The observation contains six 3x5 planes: one stone plane and one to-play plane for each player. Rectangular-board rotations currently map to the identity transformation.
+
+## Connect 3x3
+
+Connect 3x3 is the paper's second three-player game. It uses the standard 6x7 Connect Four board, but three equal-colored stones in a horizontal, vertical, or diagonal line win instead of four. A move selects one of seven columns and gravity places the current player's stone in the lowest empty cell. Full columns are illegal. Players rotate P1, P2, P3; a winner receives `[1, -1, -1]` in the corresponding player order, and a full board without a line returns `[0, 0, 0]`. Games last at most 42 moves.
+
+The policy has seven actions, one per column. The observation matches the paper: six 6x7 planes, consisting of one absolute stone plane and one to-play plane for each player. Rectangular-board rotations map to the identity transformation.
+
+Build it inside the supported MiniZero Linux environment:
+
+```bash
+scripts/build.sh connect3x3 release
+```
+
+Generate a complete paper-inspired MaxN config using MiniZero's own ResNet architecture:
+
+```bash
+build/connect3x3/minizero_connect3x3 \
+  -gen connect3x3_maxn.cfg \
+  -conf_str "nn_type_name=alphazero:actor_multiplayer_search_type=maxn:actor_num_simulation=50:actor_mcts_puct_init=3:actor_use_gumbel=false:actor_mcts_value_rescale=false:actor_dirichlet_noise_alpha=1:actor_dirichlet_noise_epsilon=0.25:zero_disable_resign_ratio=1:zero_actor_intermediate_sequence_length=0:learner_use_per=false:learner_optimizer=Adam:learner_learning_rate=0.001:learner_batch_size=64:learner_weight_decay=0.0001"
+```
+
+The generated config intentionally does not claim to reproduce the paper's SENet. Train it with:
+
+```bash
+tools/quick-run.sh train connect3x3 connect3x3_maxn.cfg 100 -n connect3x3_maxn_01
+```
 
 ## Build and test
 
@@ -33,6 +72,17 @@ ctest --test-dir build/tictacmo-test --output-on-failure
 ```
 
 The test covers player rotation, a complete Tic-Tac-Mo win, vector-result record round-tripping, player-relative MaxN backup, Paranoid opponent selection, and two-player zero-sum backup equivalence.
+
+Connect 3x3 has a separate environment test covering full columns, horizontal/vertical/diagonal wins, a complete 42-move draw, the six-plane observation, console actions, and vector-result record round-tripping:
+
+```bash
+cmake -S . -B build/connect3x3-test \
+  -DGAME_TYPE=CONNECT3X3 \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DMINIZERO_BUILD_TESTS=ON
+cmake --build build/connect3x3-test -j
+ctest --test-dir build/connect3x3-test --output-on-failure
+```
 
 ## Multi-model evaluation
 

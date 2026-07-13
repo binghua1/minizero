@@ -19,6 +19,7 @@ from pathlib import Path
 
 
 PLAYER_CODES = ("b", "w", "r", "g", "y", "p")
+DEFAULT_MAX_MOVES = {"tictacmo": 15, "connect3x3": 42}
 DEFAULT_EVAL_OVERRIDES = {
     "actor_use_gumbel": "false",
     "actor_use_gumbel_noise": "false",
@@ -626,7 +627,7 @@ def create_auto_manifest(args, repo_root, models, configs, executable):
         "lineups": create_balanced_lineups(args.search_types, args.num_players),
         "seat_mode": "all_permutations",
         "games_per_seating": args.games_per_seating,
-        "max_moves": args.max_moves if args.max_moves is not None else (15 if args.game == "tictacmo" else 2048),
+        "max_moves": args.max_moves if args.max_moves is not None else DEFAULT_MAX_MOVES.get(args.game, 2048),
         "command_timeout": args.command_timeout,
         "seed": args.seed,
     }

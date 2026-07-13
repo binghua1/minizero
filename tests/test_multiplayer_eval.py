@@ -54,6 +54,37 @@ class MultiplayerEvalTest(unittest.TestCase):
             self.assertEqual(agents["maxn"]["command"][-3], str((maxn_run / "run.cfg").resolve()))
             self.assertEqual(agents["paranoid"]["command"][-3], str((paranoid_run / "run.cfg").resolve()))
 
+    def test_auto_mode_uses_connect3x3_move_limit(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            training = temp / "connect3x3_run"
+            (training / "model").mkdir(parents=True)
+            (training / "run.cfg").write_text("actor_num_simulation=50\n")
+            (training / "model" / "weight_iter_1.pt").touch()
+            output = temp / "evaluation"
+
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(ARENA),
+                    "auto",
+                    "connect3x3",
+                    str(training),
+                    "--executable",
+                    str(FAKE_ENGINE),
+                    "--output",
+                    str(output),
+                    "--dry-run",
+                ],
+                cwd=REPO_ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            manifest = json.loads((output / "arena.json").read_text())
+            self.assertEqual(manifest["max_moves"], 42)
+
     def test_auto_mode_generates_balanced_search_arena(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp = Path(temp_dir)

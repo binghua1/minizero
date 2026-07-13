@@ -10,3 +10,9 @@ if(GAME_TYPE STREQUAL "TICTACMO")
         WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
     )
 endif()
+
+if(GAME_TYPE STREQUAL "CONNECT3X3")
+    add_executable(connect3x3_test connect3x3_test.cpp)
+    target_link_libraries(connect3x3_test environment config utils)
+    add_test(NAME connect3x3_test COMMAND connect3x3_test)
+endif()

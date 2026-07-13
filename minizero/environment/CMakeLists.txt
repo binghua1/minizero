@@ -10,6 +10,7 @@ target_include_directories(
     breakthrough
     clobber
     conhex
+    connect3x3
     connect6
     dotsandboxes
     go

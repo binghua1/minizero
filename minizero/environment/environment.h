@@ -27,6 +27,11 @@ typedef minizero::env::clobber::ClobberEnvLoader EnvironmentLoader;
 typedef minizero::env::conhex::ConHexAction Action;
 typedef minizero::env::conhex::ConHexEnv Environment;
 typedef minizero::env::conhex::ConHexEnvLoader EnvironmentLoader;
+#elif CONNECT3X3
+#include "connect3x3.h"
+typedef minizero::env::connect3x3::Connect3x3Action Action;
+typedef minizero::env::connect3x3::Connect3x3Env Environment;
+typedef minizero::env::connect3x3::Connect3x3EnvLoader EnvironmentLoader;
 #elif CONNECT6
 #include "connect6.h"
 typedef minizero::env::connect6::Connect6Action Action;
