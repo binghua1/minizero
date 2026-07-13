@@ -32,6 +32,13 @@ DEFAULT_EVAL_OVERRIDES = {
     "zero_disable_resign_ratio": "1",
     "zero_actor_intermediate_sequence_length": "0",
 }
+MULTIPLAYER_SELF_EVAL_OVERRIDES = {
+    "actor_use_gumbel": "false",
+    "actor_use_gumbel_noise": "false",
+    "actor_mcts_value_rescale": "false",
+    "zero_disable_resign_ratio": "1",
+    "zero_actor_intermediate_sequence_length": "0",
+}
 
 
 @dataclass(frozen=True)
@@ -837,10 +844,12 @@ def parse_conf_overrides(conf_str):
 
 
 def create_checkpoint_agent(name, model, config, executable, repo_root, search_type, args):
-    overrides = dict(DEFAULT_EVAL_OVERRIDES)
+    # Match quick-run self-eval by preserving evaluation choices from the config.
+    # Only force settings required by the currently supported multiplayer path.
+    overrides = dict(MULTIPLAYER_SELF_EVAL_OVERRIDES)
     overrides.update(parse_conf_overrides(args.conf_str))
-    if args.noise:
-        overrides["actor_use_dirichlet_noise"] = "true"
+    if args.noise is not None:
+        overrides["actor_use_dirichlet_noise"] = str(args.noise).lower()
     if args.num_simulations is not None:
         overrides["actor_num_simulation"] = str(args.num_simulations)
     overrides.update({
@@ -952,7 +961,10 @@ def self_eval_main(argv):
     parser.add_argument("--search-type", choices=("maxn", "paranoid"), help="default: value from config, or maxn")
     parser.add_argument("--num-players", type=int, default=3)
     parser.add_argument("--num-simulations", type=int)
-    parser.add_argument("--noise", action="store_true")
+    noise_group = parser.add_mutually_exclusive_group()
+    noise_group.add_argument("--noise", dest="noise", action="store_true", help="enable Dirichlet noise")
+    noise_group.add_argument("--no-noise", dest="noise", action="store_false", help="disable Dirichlet noise")
+    parser.set_defaults(noise=None)
     parser.add_argument("-conf_str", "--conf-str", dest="conf_str", default="")
     parser.add_argument("--max-moves", type=int)
     parser.add_argument("--command-timeout", type=float, default=300)

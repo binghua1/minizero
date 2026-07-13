@@ -111,7 +111,7 @@ python3 tools/multiplayer-eval.py self-eval connect3x3 connect3x3_maxn_smoke_01 
   -g 0123 --num_threads 2
 ```
 
-Use `--search-type paranoid` to evaluate Paranoid-trained checkpoints. `--noise` is optional; without it, evaluation uses deterministic maximum-visit action selection like the original MiniZero evaluation defaults. A checkpoint wins a multiplayer game when any seat using that checkpoint wins; the sequential Elo score uses the balanced pair win rate, with a draw worth one half.
+Use `--search-type paranoid` to evaluate Paranoid-trained checkpoints. Like the original quick-run self-evaluation, action selection and Dirichlet noise are inherited from the selected config by default. Use `--noise` or `--no-noise` to override only the noise setting. Every engine receives a deterministic per-seating seed, so noise produces different games while the complete experiment remains reproducible. A checkpoint wins a multiplayer game when any seat using that checkpoint wins; the sequential Elo score uses the balanced pair win rate, with a draw worth one half.
 
 ### Search-algorithm arenas
 

@@ -22,7 +22,7 @@ class MultiplayerEvalTest(unittest.TestCase):
             model_dir = training / "model"
             model_dir.mkdir(parents=True)
             config = training / "run.cfg"
-            config.write_text("actor_num_simulation=50\n")
+            config.write_text("actor_num_simulation=50\nactor_use_dirichlet_noise=true\n")
             for iteration in (0, 500, 1000):
                 (model_dir / f"weight_iter_{iteration}.pt").touch()
             output = training / "self_eval"
@@ -61,6 +61,10 @@ class MultiplayerEvalTest(unittest.TestCase):
                 self.assertEqual(len((pair_dir / "games.jsonl").read_text().splitlines()), 10)
                 self.assertEqual(len(manifest["agents"]), 2)
                 self.assertEqual(len(manifest["lineups"]), 2)
+                self.assertTrue(all(
+                    "actor_use_dirichlet_noise=" not in agent["command"][-1]
+                    for agent in manifest["agents"]
+                ))
 
             with (output / "elo.csv").open() as stream:
                 rows = list(csv.DictReader(stream))
