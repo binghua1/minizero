@@ -49,6 +49,49 @@ int main()
     assert(player2_edge->getMean() == -0.25f);
     assert(player3_edge->getMean() == -0.75f);
 
+    MCTS paranoid_mcts(8);
+    paranoid_mcts.reset();
+    paranoid_mcts.setRootPlayer(Player::kPlayer1);
+    paranoid_mcts.setMultiplayerSearchType(MCTS::MultiplayerSearchType::kParanoid);
+    MCTSNode* paranoid_root = paranoid_mcts.getRootNode();
+    paranoid_mcts.expand(paranoid_root, {{Action(0, Player::kPlayer1), 1.0f, 0.0f}});
+    MCTSNode* paranoid_player1_edge = paranoid_root->getChild(0);
+    const std::vector<MCTS::ActionCandidate> player2_candidates{
+        {Action(1, Player::kPlayer2), 0.5f, 0.0f},
+        {Action(2, Player::kPlayer2), 0.5f, 0.0f},
+    };
+    paranoid_mcts.expand(paranoid_player1_edge, player2_candidates);
+    MCTSNode* paranoid_high_root_value = paranoid_player1_edge->getChild(0);
+    MCTSNode* paranoid_low_root_value = paranoid_player1_edge->getChild(1);
+    paranoid_mcts.backup(
+        {paranoid_root, paranoid_player1_edge, paranoid_high_root_value},
+        PlayerValues{0.8f, 0.9f, -0.5f});
+    paranoid_mcts.backup(
+        {paranoid_root, paranoid_player1_edge, paranoid_low_root_value},
+        PlayerValues{0.2f, 0.1f, -0.1f});
+    assert(paranoid_high_root_value->getMean() == -0.8f);
+    assert(paranoid_low_root_value->getMean() == -0.2f);
+    assert(paranoid_mcts.selectFromNode(paranoid_player1_edge).back() == paranoid_low_root_value);
+
+    MCTS maxn_selection_mcts(8);
+    maxn_selection_mcts.reset();
+    maxn_selection_mcts.setRootPlayer(Player::kPlayer1);
+    MCTSNode* maxn_selection_root = maxn_selection_mcts.getRootNode();
+    maxn_selection_mcts.expand(maxn_selection_root, {{Action(0, Player::kPlayer1), 1.0f, 0.0f}});
+    MCTSNode* maxn_selection_player1_edge = maxn_selection_root->getChild(0);
+    maxn_selection_mcts.expand(maxn_selection_player1_edge, player2_candidates);
+    MCTSNode* maxn_high_player2_value = maxn_selection_player1_edge->getChild(0);
+    MCTSNode* maxn_low_player2_value = maxn_selection_player1_edge->getChild(1);
+    maxn_selection_mcts.backup(
+        {maxn_selection_root, maxn_selection_player1_edge, maxn_high_player2_value},
+        PlayerValues{0.8f, 0.9f, -0.5f});
+    maxn_selection_mcts.backup(
+        {maxn_selection_root, maxn_selection_player1_edge, maxn_low_player2_value},
+        PlayerValues{0.2f, 0.1f, -0.1f});
+    assert(maxn_high_player2_value->getMean() == 0.9f);
+    assert(maxn_low_player2_value->getMean() == 0.1f);
+    assert(maxn_selection_mcts.selectFromNode(maxn_selection_player1_edge).back() == maxn_high_player2_value);
+
     MCTS scalar_two_player_mcts(4);
     scalar_two_player_mcts.reset();
     MCTSNode* scalar_root = scalar_two_player_mcts.getRootNode();

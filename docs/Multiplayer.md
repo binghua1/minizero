@@ -1,6 +1,11 @@
 # Multiplayer AlphaZero
 
-MiniZero's multiplayer AlphaZero path uses an absolute utility vector at network leaves and terminal states. MCTS edges remain scalar: during backup, each edge receives the utility component of the player who selected that edge. This is the MaxN backup used by the `nplayer` branch of the reference Multiplayer AlphaZero implementation.
+MiniZero's multiplayer AlphaZero path uses an absolute utility vector at network leaves and terminal states. MCTS edges remain scalar, with selectable MaxN or Paranoid backup semantics.
+
+- `actor_multiplayer_search_type=maxn` stores the utility component of the player who selected each edge, so every player maximizes their own value.
+- `actor_multiplayer_search_type=paranoid` stores the root player's utility on root-player edges and its negation on every opponent edge, so all opponents act as a coalition minimizing the root player's value.
+
+The neural network and terminal targets remain the same vector in both modes. Models trained with different search types should use separate training directories because their MCTS policy targets differ.
 
 ## Tic-Tac-Mo
 
@@ -27,7 +32,7 @@ cmake --build build/tictacmo-test -j
 ctest --test-dir build/tictacmo-test --output-on-failure
 ```
 
-The test covers player rotation, a complete Tic-Tac-Mo win, vector-result record round-tripping, and player-relative MaxN backup.
+The test covers player rotation, a complete Tic-Tac-Mo win, vector-result record round-tripping, player-relative MaxN backup, Paranoid opponent selection, and two-player zero-sum backup equivalence.
 
 ## Multi-model evaluation
 
@@ -47,7 +52,7 @@ Create a JSON manifest such as:
       "command": [
         "build/tictacmo/minizero_tictacmo", "-mode", "console",
         "-conf_file", "/workspace/tictacmo/run.cfg",
-        "-conf_str", "nn_file_name=/workspace/tictacmo/model/weight_iter_1000.pt:program_seed={seed}:program_auto_seed=false:actor_use_gumbel=false:actor_use_dirichlet_noise=false:actor_use_random_rotation_features=false:actor_select_action_by_count=true:actor_select_action_by_softmax_count=false:actor_mcts_value_rescale=false:zero_disable_resign_ratio=1:zero_actor_intermediate_sequence_length=0"
+        "-conf_str", "nn_file_name=/workspace/tictacmo/model/weight_iter_1000.pt:actor_multiplayer_search_type=maxn:program_seed={seed}:program_auto_seed=false:actor_use_gumbel=false:actor_use_dirichlet_noise=false:actor_use_random_rotation_features=false:actor_select_action_by_count=true:actor_select_action_by_softmax_count=false:actor_mcts_value_rescale=false:zero_disable_resign_ratio=1:zero_actor_intermediate_sequence_length=0"
       ]
     },
     {
@@ -57,7 +62,7 @@ Create a JSON manifest such as:
       "command": [
         "build/tictacmo/minizero_tictacmo", "-mode", "console",
         "-conf_file", "/workspace/tictacmo/run.cfg",
-        "-conf_str", "nn_file_name=/workspace/tictacmo/model/weight_iter_5000.pt:program_seed={seed}:program_auto_seed=false:actor_use_gumbel=false:actor_use_dirichlet_noise=false:actor_use_random_rotation_features=false:actor_select_action_by_count=true:actor_select_action_by_softmax_count=false:actor_mcts_value_rescale=false:zero_disable_resign_ratio=1:zero_actor_intermediate_sequence_length=0"
+        "-conf_str", "nn_file_name=/workspace/tictacmo/model/weight_iter_5000.pt:actor_multiplayer_search_type=maxn:program_seed={seed}:program_auto_seed=false:actor_use_gumbel=false:actor_use_dirichlet_noise=false:actor_use_random_rotation_features=false:actor_select_action_by_count=true:actor_select_action_by_softmax_count=false:actor_mcts_value_rescale=false:zero_disable_resign_ratio=1:zero_actor_intermediate_sequence_length=0"
       ]
     },
     {
@@ -67,7 +72,7 @@ Create a JSON manifest such as:
       "command": [
         "build/tictacmo/minizero_tictacmo", "-mode", "console",
         "-conf_file", "/workspace/tictacmo/run.cfg",
-        "-conf_str", "nn_file_name=/workspace/tictacmo/model/weight_iter_15000.pt:program_seed={seed}:program_auto_seed=false:actor_use_gumbel=false:actor_use_dirichlet_noise=false:actor_use_random_rotation_features=false:actor_select_action_by_count=true:actor_select_action_by_softmax_count=false:actor_mcts_value_rescale=false:zero_disable_resign_ratio=1:zero_actor_intermediate_sequence_length=0"
+        "-conf_str", "nn_file_name=/workspace/tictacmo/model/weight_iter_15000.pt:actor_multiplayer_search_type=maxn:program_seed={seed}:program_auto_seed=false:actor_use_gumbel=false:actor_use_dirichlet_noise=false:actor_use_random_rotation_features=false:actor_select_action_by_count=true:actor_select_action_by_softmax_count=false:actor_mcts_value_rescale=false:zero_disable_resign_ratio=1:zero_actor_intermediate_sequence_length=0"
       ]
     }
   ],
@@ -79,6 +84,14 @@ Create a JSON manifest such as:
   "seed": 0
 }
 ```
+
+To evaluate or train a Paranoid agent, change only its configuration override:
+
+```text
+actor_multiplayer_search_type=paranoid
+```
+
+For a mixed arena, give the MaxN and Paranoid entries distinct agent names and commands, then place them in explicit lineups such as `["maxn", "maxn", "paranoid"]`. Unique seat permutations are generated automatically.
 
 `{seed}`, `{seat}`, `{seat_index}`, `{agent}`, `{gpu}`, `{worker_id}`, and `{task_id}` in commands or environment variables are replaced when each engine starts. Run the arena inside the normal MiniZero/Podman environment:
 
@@ -103,6 +116,7 @@ The first multiplayer baseline supports AlphaZero with standard PUCT only. Use t
 
 ```text
 nn_type_name=alphazero
+actor_multiplayer_search_type=maxn
 actor_use_gumbel=false
 actor_mcts_value_rescale=false
 learner_use_per=false

@@ -74,6 +74,11 @@ typedef TreeData<HiddenStateData> TreeHiddenStateData;
 
 class MCTS : public Tree, public Search {
 public:
+    enum class MultiplayerSearchType {
+        kMaxN,
+        kParanoid,
+    };
+
     class ActionCandidate {
     public:
         Action action_;
@@ -108,6 +113,8 @@ public:
     inline const std::map<float, int>& getTreeValueBound() const { return tree_value_bound_; }
     inline void setRootPlayer(env::Player root_player) { root_player_ = root_player; }
     inline env::Player getRootPlayer() const { return root_player_; }
+    inline void setMultiplayerSearchType(MultiplayerSearchType search_type) { multiplayer_search_type_ = search_type; }
+    inline MultiplayerSearchType getMultiplayerSearchType() const { return multiplayer_search_type_; }
     inline bool usePlayerValueBackup() const { return use_player_value_backup_; }
 
 protected:
@@ -121,6 +128,7 @@ protected:
     std::map<float, int> tree_value_bound_;
     TreeHiddenStateData tree_hidden_state_data_;
     env::Player root_player_;
+    MultiplayerSearchType multiplayer_search_type_;
     bool use_player_value_backup_;
 };
 

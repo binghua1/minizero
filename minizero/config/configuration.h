@@ -20,6 +20,7 @@ extern int actor_mcts_think_batch_size;
 extern float actor_mcts_think_time_limit;
 extern bool actor_mcts_value_rescale;
 extern char actor_mcts_value_flipping_player;
+extern std::string actor_multiplayer_search_type;
 extern bool actor_select_action_by_count;
 extern bool actor_select_action_by_softmax_count;
 extern float actor_select_action_softmax_temperature;

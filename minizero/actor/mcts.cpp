@@ -82,6 +82,7 @@ void MCTS::reset()
     tree_hidden_state_data_.reset();
     tree_value_bound_.clear();
     root_player_ = env::Player::kPlayerNone;
+    multiplayer_search_type_ = MultiplayerSearchType::kMaxN;
     use_player_value_backup_ = false;
 }
 
@@ -190,8 +191,14 @@ void MCTS::backup(const std::vector<MCTSNode*>& node_path, const env::PlayerValu
 
     for (int i = static_cast<int>(node_path.size()) - 1; i >= 0; --i) {
         MCTSNode* node = node_path[i];
-        const env::Player perspective = (i == 0 ? root_player_ : node->getAction().getPlayer());
-        const float value = values[env::playerToIndex(perspective)];
+        const env::Player action_player = (i == 0 ? root_player_ : node->getAction().getPlayer());
+        float value;
+        if (multiplayer_search_type_ == MultiplayerSearchType::kParanoid) {
+            const float root_value = values[env::playerToIndex(root_player_)];
+            value = (action_player == root_player_ ? root_value : -root_value);
+        } else {
+            value = values[env::playerToIndex(action_player)];
+        }
         node->add(value);
         if (i == static_cast<int>(node_path.size()) - 1) { node->setValue(value); }
     }

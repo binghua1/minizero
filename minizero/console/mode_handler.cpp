@@ -156,12 +156,14 @@ void ModeHandler::runZeroServer()
 
 void ModeHandler::runZeroTrainingName()
 {
-    std::cout << Environment().name()                                                           // name for environment
-              << "_" << (config::actor_use_gumbel ? "g" : "") << config::nn_type_name[0] << "z" // network & training algorithm
-              << "_" << config::nn_num_blocks << "b"                                            // number of blocks
-              << "x" << config::nn_num_hidden_channels                                          // number of hidden channels
-              << "_n" << config::actor_num_simulation                                           // number of simulations
-              << "-" << GIT_SHORT_HASH << std::endl;                                            // git hash info
+    Environment environment;
+    std::cout << environment.name()                                                                  // name for environment
+              << "_" << (config::actor_use_gumbel ? "g" : "") << config::nn_type_name[0] << "z"      // network & training algorithm
+              << (environment.getNumPlayer() > 2 ? "_" + config::actor_multiplayer_search_type : "") // multiplayer search
+              << "_" << config::nn_num_blocks << "b"                                                 // number of blocks
+              << "x" << config::nn_num_hidden_channels                                               // number of hidden channels
+              << "_n" << config::actor_num_simulation                                                // number of simulations
+              << "-" << GIT_SHORT_HASH << std::endl;                                                 // git hash info
 }
 
 void ModeHandler::runEnvTest()

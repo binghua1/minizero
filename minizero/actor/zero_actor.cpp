@@ -33,6 +33,10 @@ void ZeroActor::resetSearch()
     BaseActor::resetSearch();
     mcts_search_data_.node_path_.clear();
     getMCTS()->setRootPlayer(env_.getTurn());
+    getMCTS()->setMultiplayerSearchType(
+        config::actor_multiplayer_search_type == "paranoid"
+            ? MCTS::MultiplayerSearchType::kParanoid
+            : MCTS::MultiplayerSearchType::kMaxN);
     getMCTS()->getRootNode()->setAction(Action(-1, env::getPreviousPlayer(env_.getTurn(), env_.getNumPlayer())));
 }
 
@@ -120,6 +124,9 @@ void ZeroActor::setNetwork(const std::shared_ptr<network::Network>& network)
     assert((alphazero_network_ && !muzero_network_) || (!alphazero_network_ && muzero_network_));
 
     if (env_.getNumPlayer() > 2) {
+        if (config::actor_multiplayer_search_type != "maxn" && config::actor_multiplayer_search_type != "paranoid") {
+            throw std::runtime_error("multiplayer search type must be maxn or paranoid");
+        }
         if (!alphazero_network_) { throw std::runtime_error("multiplayer environments currently support AlphaZero only"); }
         if (network->getNumPlayers() != env_.getNumPlayer()) { throw std::runtime_error("network and environment player counts do not match"); }
         if (config::actor_use_gumbel) { throw std::runtime_error("multiplayer Gumbel search is not validated yet"); }
