@@ -15,6 +15,59 @@ FAKE_ENGINE = REPO_ROOT / "tests" / "fake_multiplayer_engine.py"
 
 
 class MultiplayerEvalTest(unittest.TestCase):
+    def test_self_eval_pairs_checkpoints_and_uses_total_game_count(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            training = temp / "connect3x3_run"
+            model_dir = training / "model"
+            model_dir.mkdir(parents=True)
+            config = training / "run.cfg"
+            config.write_text("actor_num_simulation=50\n")
+            for iteration in (0, 500, 1000):
+                (model_dir / f"weight_iter_{iteration}.pt").touch()
+            output = training / "self_eval"
+
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(ARENA),
+                    "self-eval",
+                    "connect3x3",
+                    str(training),
+                    "--conf-file",
+                    str(config),
+                    "--interval",
+                    "1",
+                    "--games",
+                    "10",
+                    "--executable",
+                    str(FAKE_ENGINE),
+                    "--output",
+                    str(output),
+                    "--num_threads",
+                    "2",
+                ],
+                cwd=REPO_ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            pair_names = ("500_vs_0", "1000_vs_500")
+            for pair_name in pair_names:
+                pair_dir = output / pair_name
+                manifest = json.loads((pair_dir / "arena.json").read_text())
+                self.assertEqual(manifest["num_games"], 10)
+                self.assertEqual(len((pair_dir / "games.jsonl").read_text().splitlines()), 10)
+                self.assertEqual(len(manifest["agents"]), 2)
+                self.assertEqual(len(manifest["lineups"]), 2)
+
+            with (output / "elo.csv").open() as stream:
+                rows = list(csv.DictReader(stream))
+            self.assertEqual([(row["P1"], row["P2"]) for row in rows], [("500", "0"), ("1000", "500")])
+            self.assertTrue(all(int(row["Total"]) == 10 for row in rows))
+            self.assertTrue(all(float(row["WinRate"]) == 0.5 for row in rows))
+
     def test_auto_mode_accepts_different_models_and_configs(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp = Path(temp_dir)

@@ -88,6 +88,33 @@ ctest --test-dir build/connect3x3-test --output-on-failure
 
 `tools/multiplayer-eval.py` runs one MiniZero console process per seat, forwards every move to the other engines, and balances seat advantage by evaluating fixed, cyclic, or all unique permutations of each lineup. Each agent can use a different model, configuration, simulation budget, or search algorithm.
 
+### Checkpoint self-evaluation
+
+Multiplayer checkpoint self-evaluation follows the original `quick-run.sh self-eval` pairing rule. Checkpoints are sorted by iteration, and an interval of 10 evaluates checkpoint indices 0 vs. 10, 10 vs. 20, and so on. Both checkpoint agents use the same search algorithm. For every pair, the evaluator creates the two mixed three-player lineups, evaluates all seat assignments, and distributes the requested total game count as evenly as possible across them.
+
+The existing quick-run interface automatically selects this evaluator for Tic-Tac-Mo and Connect 3x3:
+
+```bash
+tools/quick-run.sh self-eval connect3x3 connect3x3_maxn_smoke_01 \
+  connect3x3_maxn_smoke_01/connect3x3_maxn_smoke_01.cfg 10 100 \
+  -g 0123 --num_threads 2
+```
+
+Here, `10` is the checkpoint-index interval and `100` is the total number of games for each checkpoint pair, not the number of games per seating. Results use the original layout `TRAINING_DIR/self_eval/NEWER_vs_OLDER/`, plus `self_eval/elo.csv` and `self_eval/elo.png`.
+
+The same evaluator can be launched directly:
+
+```bash
+python3 tools/multiplayer-eval.py self-eval connect3x3 connect3x3_maxn_smoke_01 \
+  --conf-file connect3x3_maxn_smoke_01/connect3x3_maxn_smoke_01.cfg \
+  --interval 10 --games 100 --search-type maxn --noise \
+  -g 0123 --num_threads 2
+```
+
+Use `--search-type paranoid` to evaluate Paranoid-trained checkpoints. `--noise` is optional; without it, evaluation uses deterministic maximum-visit action selection like the original MiniZero evaluation defaults. A checkpoint wins a multiplayer game when any seat using that checkpoint wins; the sequential Elo score uses the balanced pair win rate, with a draw worth one half.
+
+### Search-algorithm arenas
+
 For the common case of comparing MaxN and Paranoid with the same trained model, use auto mode:
 
 ```bash

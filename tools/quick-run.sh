@@ -500,17 +500,37 @@ elif [[ $mode == self-eval ]]; then # ================================ SELF-EVAL
     eval_interval=${eval_interval:=10}
     eval_game_num=${eval_game_num:=100}
 
-    opts=()
-    opts+=(-g ${CUDA_VISIBLE_DEVICES//,/})
-    opts+=(-s ${eval_start_index:=0})
-    opts+=(-d ${eval_folder_name:=self_eval})
-    opts+=(--num_threads ${num_threads:=2})
-    [[ $conf_str ]] && opts+=(-conf_str $conf_str)
-
-    $launch tools/self-eval.sh $game $eval_dir $conf_file $eval_interval $eval_game_num ${opts[@]} 2>&1 | colorize OUT_EVAL
+    eval_start_index=${eval_start_index:=0}
+    eval_folder_name=${eval_folder_name:=self_eval}
+    num_threads=${num_threads:=2}
+    if [[ $game == tictacmo || $game == connect3x3 ]]; then
+        multiplayer_self_eval=true
+        opts=(
+            --conf-file "$conf_file"
+            --interval "$eval_interval"
+            --games "$eval_game_num"
+            -s "$eval_start_index"
+            -d "$eval_dir/$eval_folder_name"
+            -g "${CUDA_VISIBLE_DEVICES//,/}"
+            --num_threads "$num_threads"
+            --executable "$executable"
+        )
+        [[ $conf_str ]] && opts+=(-conf_str "$conf_str")
+        $launch python3 tools/multiplayer-eval.py self-eval $game $eval_dir "${opts[@]}" 2>&1 | colorize OUT_EVAL
+    else
+        opts=()
+        opts+=(-g ${CUDA_VISIBLE_DEVICES//,/})
+        opts+=(-s "$eval_start_index")
+        opts+=(-d "$eval_folder_name")
+        opts+=(--num_threads "$num_threads")
+        [[ $conf_str ]] && opts+=(-conf_str "$conf_str")
+        $launch tools/self-eval.sh $game $eval_dir $conf_file $eval_interval $eval_game_num "${opts[@]}" 2>&1 | colorize OUT_EVAL
+    fi
     code=${PIPESTATUS[0]}
     if [[ $code == 0 ]] && [ -d "$eval_dir/$eval_folder_name" ]; then
-        echo P1 | $launch tools/eval.py -in_dir "$eval_dir/$eval_folder_name" --plot
+        if [[ $multiplayer_self_eval != true ]]; then
+            echo P1 | $launch tools/eval.py -in_dir "$eval_dir/$eval_folder_name" --plot
+        fi
         if [ -e "$eval_dir/$eval_folder_name/elo.png" ]; then
             log INFO "Evaluation results: $eval_dir/$eval_folder_name/elo.png"
         else

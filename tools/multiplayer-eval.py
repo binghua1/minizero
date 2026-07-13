@@ -6,6 +6,7 @@ import argparse
 import csv
 import itertools
 import json
+import math
 import os
 import queue
 import re
@@ -185,14 +186,17 @@ def load_manifest(path):
         "lineups": lineups,
         "seat_mode": data.get("seat_mode", "all_permutations"),
         "games_per_seating": int(data.get("games_per_seating", 1)),
+        "num_games": int(data["num_games"]) if data.get("num_games") is not None else None,
         "max_moves": int(data.get("max_moves", 2048)),
         "command_timeout": float(data.get("command_timeout", 300)),
         "seed": int(data.get("seed", 0)),
     }
     if config["seat_mode"] not in ("fixed", "cyclic", "all_permutations"):
         raise ValueError("seat_mode must be fixed, cyclic, or all_permutations")
-    if config["games_per_seating"] < 1 or config["max_moves"] < 1 or config["command_timeout"] <= 0:
-        raise ValueError("games_per_seating, max_moves, and command_timeout must be positive")
+    if (config["games_per_seating"] < 1 or
+            (config["num_games"] is not None and config["num_games"] < 1) or
+            config["max_moves"] < 1 or config["command_timeout"] <= 0):
+        raise ValueError("game counts, max_moves, and command_timeout must be positive")
     return config
 
 
@@ -206,18 +210,63 @@ def unique_seatings(lineup, mode):
     return list(dict.fromkeys(candidates))
 
 
+def balanced_remainder_indices(seatings, remainder):
+    if remainder == 0:
+        return set()
+
+    features = []
+    for _, _, seating in seatings:
+        item = []
+        for seat, agent in enumerate(seating):
+            item.extend(((agent, seat), (agent, None)))
+        features.append(item)
+    totals = {}
+    for item in features:
+        for feature in item:
+            totals[feature] = totals.get(feature, 0) + 1
+    expected = {feature: count * remainder / len(seatings) for feature, count in totals.items()}
+
+    combination_count = math.comb(len(seatings), remainder)
+    if combination_count <= 100000:
+        candidates = itertools.combinations(range(len(seatings)), remainder)
+    else:
+        candidates = (tuple(range(remainder)),)
+    best_score = None
+    best_indices = None
+    for indices in candidates:
+        counts = {}
+        for index in indices:
+            for feature in features[index]:
+                counts[feature] = counts.get(feature, 0) + 1
+        score = sum((counts.get(feature, 0) - target) ** 2 for feature, target in expected.items())
+        if best_score is None or score < best_score:
+            best_score = score
+            best_indices = indices
+    return set(best_indices)
+
+
 def create_schedule(config):
     tasks = []
     game_id = 0
-    task_id = 0
+    seatings = []
     for lineup_id, lineup in enumerate(config["lineups"]):
         for seating_id, seating in enumerate(unique_seatings(list(lineup), config["seat_mode"])):
-            games = []
-            for repeat in range(config["games_per_seating"]):
-                games.append(GameSpec(game_id, lineup_id, seating_id, repeat, seating))
-                game_id += 1
+            seatings.append((lineup_id, seating_id, seating))
+
+    if config.get("num_games") is None:
+        game_counts = [config["games_per_seating"]] * len(seatings)
+    else:
+        games_per_seating, remainder = divmod(config["num_games"], len(seatings))
+        extra_games = balanced_remainder_indices(seatings, remainder)
+        game_counts = [games_per_seating + int(index in extra_games) for index in range(len(seatings))]
+
+    for task_id, ((lineup_id, seating_id, seating), game_count) in enumerate(zip(seatings, game_counts)):
+        games = []
+        for repeat in range(game_count):
+            games.append(GameSpec(game_id, lineup_id, seating_id, repeat, seating))
+            game_id += 1
+        if games:
             tasks.append(SeatingTask(task_id, tuple(games)))
-            task_id += 1
     return tasks
 
 
@@ -746,16 +795,276 @@ def auto_main(argv):
         gpu=args.gpu,
         num_threads=args.num_threads,
         games_per_seating=None,
+        num_games=None,
         max_moves=None,
         resume=args.resume,
         overwrite=args.overwrite,
     ))
 
 
+def model_iteration(path):
+    match = re.fullmatch(r"weight_iter_(\d+)\.pt", path.name)
+    if not match:
+        raise ValueError(f"invalid checkpoint file name: {path.name}")
+    return int(match.group(1))
+
+
+def find_checkpoints(training_dir):
+    checkpoints = []
+    for path in (training_dir / "model").glob("weight_iter_*.pt"):
+        try:
+            iteration = model_iteration(path)
+        except ValueError:
+            continue
+        checkpoints.append((iteration, path.resolve()))
+    if not checkpoints:
+        raise FileNotFoundError(f"no weight_iter_*.pt found in {training_dir / 'model'}")
+    return [path for _, path in sorted(checkpoints)]
+
+
+def parse_conf_overrides(conf_str):
+    overrides = {}
+    if not conf_str:
+        return overrides
+    for item in conf_str.split(":"):
+        if not item or "=" not in item:
+            raise ValueError(f"invalid configuration override: {item!r}")
+        key, value = item.split("=", 1)
+        if not key:
+            raise ValueError(f"invalid configuration override: {item!r}")
+        overrides[key] = value
+    return overrides
+
+
+def create_checkpoint_agent(name, model, config, executable, repo_root, search_type, args):
+    overrides = dict(DEFAULT_EVAL_OVERRIDES)
+    overrides.update(parse_conf_overrides(args.conf_str))
+    if args.noise:
+        overrides["actor_use_dirichlet_noise"] = "true"
+    if args.num_simulations is not None:
+        overrides["actor_num_simulation"] = str(args.num_simulations)
+    overrides.update({
+        "nn_file_name": str(model),
+        "actor_multiplayer_search_type": search_type,
+        "program_seed": "{seed}",
+        "program_auto_seed": "false",
+    })
+    conf_str = ":".join(f"{key}={value}" for key, value in overrides.items())
+    return {
+        "name": name,
+        "cwd": str(repo_root),
+        "env": {"OMP_NUM_THREADS": str(args.omp_num_threads)},
+        "command": [
+            str(executable), "-mode", "console",
+            "-conf_file", str(config),
+            "-conf_str", conf_str,
+        ],
+    }
+
+
+def create_checkpoint_manifest(args, repo_root, executable, config, older, newer):
+    older_iteration = model_iteration(older)
+    newer_iteration = model_iteration(newer)
+    older_name = f"iter_{older_iteration}"
+    newer_name = f"iter_{newer_iteration}"
+    agent_names = [older_name, newer_name]
+    return {
+        "game": args.game,
+        "players": list(PLAYER_CODES[:args.num_players]),
+        "agents": [
+            create_checkpoint_agent(older_name, older, config, executable, repo_root, args.search_type, args),
+            create_checkpoint_agent(newer_name, newer, config, executable, repo_root, args.search_type, args),
+        ],
+        "lineups": create_balanced_lineups(agent_names, args.num_players),
+        "seat_mode": "all_permutations",
+        "num_games": args.games,
+        "max_moves": args.max_moves if args.max_moves is not None else DEFAULT_MAX_MOVES.get(args.game, 2048),
+        "command_timeout": args.command_timeout,
+        "seed": args.seed,
+        "self_eval": {
+            "older_iteration": older_iteration,
+            "newer_iteration": newer_iteration,
+            "search_type": args.search_type,
+        },
+    }
+
+
+def summarize_checkpoint_pair(results_path, older_name, newer_name):
+    newer_wins = older_wins = draws = errors = 0
+    with results_path.open() as stream:
+        for line in stream:
+            if not line.strip():
+                continue
+            record = json.loads(line)
+            if record.get("error"):
+                errors += 1
+            elif record.get("draw") or record.get("winner_agent") is None:
+                draws += 1
+            elif record["winner_agent"] == newer_name:
+                newer_wins += 1
+            elif record["winner_agent"] == older_name:
+                older_wins += 1
+            else:
+                raise ValueError(f"unexpected winner agent: {record['winner_agent']}")
+    valid = newer_wins + older_wins + draws
+    win_rate = (newer_wins + 0.5 * draws) / valid if valid else float("nan")
+    return newer_wins, older_wins, draws, errors, valid, win_rate
+
+
+def updated_elo(opponent_elo, score):
+    if score >= 1:
+        return opponent_elo + 1000
+    if score <= 0:
+        return opponent_elo - 1000
+    difference = 400 * math.log10(score / (1 - score))
+    return opponent_elo + max(-1000, min(1000, difference))
+
+
+def write_self_eval_plot(path, ratings):
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        print("warning: matplotlib unavailable; elo.png was not generated", file=sys.stderr)
+        return
+    iterations = sorted(ratings)
+    figure, axis = plt.subplots()
+    axis.plot(iterations, [ratings[iteration] for iteration in iterations], marker="o", label="model")
+    axis.set_xlabel("iteration")
+    axis.set_ylabel("elo rating")
+    axis.legend()
+    figure.tight_layout()
+    figure.savefig(path)
+    plt.close(figure)
+
+
+def self_eval_main(argv):
+    parser = argparse.ArgumentParser(
+        prog="multiplayer-eval.py self-eval",
+        description="Evaluate consecutive checkpoint pairs with seat-balanced multiplayer games.",
+    )
+    parser.add_argument("game", help="MiniZero multiplayer game type")
+    parser.add_argument("training_dir", help="training folder containing model/ and a config")
+    parser.add_argument("--conf-file", help="evaluation config (default: newest *.cfg in the training folder)")
+    parser.add_argument("--interval", type=int, default=10, help="checkpoint index interval, matching quick-run self-eval")
+    parser.add_argument("--games", type=int, default=100, help="total games for each checkpoint pair")
+    parser.add_argument("-s", "--start-index", type=int, default=0)
+    parser.add_argument("-d", "--output", help="result directory (default: TRAINING_DIR/self_eval)")
+    parser.add_argument("--search-type", choices=("maxn", "paranoid"), help="default: value from config, or maxn")
+    parser.add_argument("--num-players", type=int, default=3)
+    parser.add_argument("--num-simulations", type=int)
+    parser.add_argument("--noise", action="store_true")
+    parser.add_argument("-conf_str", "--conf-str", dest="conf_str", default="")
+    parser.add_argument("--max-moves", type=int)
+    parser.add_argument("--command-timeout", type=float, default=300)
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--omp-num-threads", type=int, default=2)
+    parser.add_argument("--executable", help="engine executable (default: build/GAME/minizero_GAME)")
+    parser.add_argument("-g", "--gpu", help="GPU list, for example 0123 or 0,1,2,3")
+    parser.add_argument("--num_threads", "--num-threads", "--threads", dest="num_threads", type=int, default=1)
+    parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument("--dry-run", action="store_true", help="only generate pair arena manifests")
+    args = parser.parse_args(argv)
+    args.game = args.game.lower()
+
+    positive = (args.interval, args.games, args.num_players, args.command_timeout,
+                args.omp_num_threads, args.num_threads)
+    if any(value <= 0 for value in positive) or args.start_index < 0:
+        parser.error("interval, game, player, timeout, and thread values must be positive; start index cannot be negative")
+    if not 2 <= args.num_players <= len(PLAYER_CODES):
+        parser.error(f"--num-players must be between 2 and {len(PLAYER_CODES)}")
+    if args.num_simulations is not None and args.num_simulations <= 0:
+        parser.error("--num-simulations must be positive")
+
+    repo_root = Path(__file__).resolve().parents[1]
+    training_dir = Path(args.training_dir).resolve()
+    if not training_dir.is_dir():
+        parser.error(f"training directory not found: {training_dir}")
+    config = resolve_auto_config(training_dir, args.conf_file)
+    if args.search_type is None:
+        args.search_type = read_config_value(config, "actor_multiplayer_search_type") or "maxn"
+    executable = Path(args.executable).resolve() if args.executable else repo_root / "build" / args.game / f"minizero_{args.game}"
+    if not executable.is_file():
+        parser.error(f"engine executable not found: {executable}; build it before evaluation")
+    checkpoints = find_checkpoints(training_dir)
+    if args.start_index >= len(checkpoints):
+        parser.error(f"--start-index {args.start_index} exceeds {len(checkpoints)} available checkpoints")
+    pairs = [
+        (checkpoints[index], checkpoints[index + args.interval])
+        for index in range(args.start_index, len(checkpoints) - args.interval, args.interval)
+    ]
+    if not pairs:
+        parser.error(f"not enough checkpoints for interval {args.interval} starting at index {args.start_index}")
+
+    output_dir = Path(args.output).resolve() if args.output else training_dir / "self_eval"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    pair_rows = []
+    ratings = {model_iteration(pairs[0][0]): 0.0}
+    for older, newer in pairs:
+        older_iteration = model_iteration(older)
+        newer_iteration = model_iteration(newer)
+        older_name = f"iter_{older_iteration}"
+        newer_name = f"iter_{newer_iteration}"
+        pair_dir = output_dir / f"{newer_iteration}_vs_{older_iteration}"
+        pair_dir.mkdir(parents=True, exist_ok=True)
+        manifest_path = pair_dir / "arena.json"
+        manifest = create_checkpoint_manifest(args, repo_root, executable.resolve(), config, older, newer)
+        if manifest_path.exists() and not args.overwrite:
+            with manifest_path.open() as stream:
+                previous_manifest = json.load(stream)
+            if previous_manifest != manifest:
+                raise ValueError(f"generated settings differ from existing self-eval pair: {manifest_path}; use --overwrite")
+        with manifest_path.open("w") as stream:
+            json.dump(manifest, stream, indent=2)
+            stream.write("\n")
+        print(f"checkpoint pair {newer_iteration} vs {older_iteration}: {args.games} total games", flush=True)
+        if args.dry_run:
+            continue
+
+        results_path = pair_dir / "games.jsonl"
+        run(argparse.Namespace(
+            manifest=str(manifest_path),
+            output=str(pair_dir),
+            gpu=args.gpu,
+            num_threads=args.num_threads,
+            games_per_seating=None,
+            num_games=None,
+            max_moves=None,
+            resume=results_path.exists() and not args.overwrite,
+            overwrite=args.overwrite,
+        ))
+        newer_wins, older_wins, draws, errors, valid, win_rate = summarize_checkpoint_pair(
+            results_path, older_name, newer_name)
+        older_elo = ratings.get(older_iteration, 0.0)
+        newer_elo = updated_elo(older_elo, win_rate) if valid else float("nan")
+        ratings[newer_iteration] = newer_elo
+        pair_rows.append({
+            "P1": newer_iteration,
+            "P2": older_iteration,
+            "P1 Wins": newer_wins,
+            "P2 Wins": older_wins,
+            "Draw": draws,
+            "Errors": errors,
+            "Total": valid,
+            "WinRate": round(win_rate, 6) if valid else "",
+            "P1 Elo": round(newer_elo, 3) if valid else "",
+        })
+
+    if args.dry_run:
+        print(f"generated {len(pairs)} checkpoint-pair manifests under {output_dir}")
+        return
+    fields = ["P1", "P2", "P1 Wins", "P2 Wins", "Draw", "Errors", "Total", "WinRate", "P1 Elo"]
+    write_csv(output_dir / "elo.csv", fields, pair_rows)
+    write_self_eval_plot(output_dir / "elo.png", ratings)
+    print(f"self-eval summary: {output_dir / 'elo.csv'}")
+
+
 def run(args):
     config = load_manifest(args.manifest)
     if args.games_per_seating is not None:
         config["games_per_seating"] = args.games_per_seating
+        config["num_games"] = None
+    if getattr(args, "num_games", None) is not None:
+        config["num_games"] = args.num_games
     if args.max_moves is not None:
         config["max_moves"] = args.max_moves
     output_dir = Path(args.output).resolve()
@@ -835,6 +1144,9 @@ def main():
     if len(sys.argv) > 1 and sys.argv[1] == "auto":
         auto_main(sys.argv[2:])
         return
+    if len(sys.argv) > 1 and sys.argv[1] == "self-eval":
+        self_eval_main(sys.argv[2:])
+        return
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("manifest", help="JSON arena manifest")
     parser.add_argument("output", help="output directory")
@@ -847,12 +1159,15 @@ def main():
         help="parallel seating workers per GPU (or total workers when -g is omitted)",
     )
     parser.add_argument("--games-per-seating", type=int, help="override manifest value")
+    parser.add_argument("--num-games", type=int, help="override with an exact total game count")
     parser.add_argument("--max-moves", type=int, help="override manifest value")
     parser.add_argument("--resume", action="store_true", help="skip game IDs already present in games.jsonl")
     parser.add_argument("--overwrite", action="store_true", help="replace games.jsonl and summaries")
     args = parser.parse_args()
-    if args.num_threads < 1 or (args.games_per_seating is not None and args.games_per_seating < 1):
-        parser.error("--num_threads and --games-per-seating must be positive")
+    if (args.num_threads < 1 or
+            (args.games_per_seating is not None and args.games_per_seating < 1) or
+            (args.num_games is not None and args.num_games < 1)):
+        parser.error("thread and game counts must be positive")
     run(args)
 
 
