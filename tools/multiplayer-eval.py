@@ -50,6 +50,8 @@ class Engine:
         self.command = format_command(agent.command, context)
         self.stderr_file = open(stderr_path, "w") if stderr_path else subprocess.DEVNULL
         env = os.environ.copy()
+        if context["gpu"] != "" and "CUDA_VISIBLE_DEVICES" not in (agent.env or {}):
+            env["CUDA_VISIBLE_DEVICES"] = context["gpu"]
         for key, value in (agent.env or {}).items():
             env[key] = str(value).format_map(context)
         self.proc = subprocess.Popen(
@@ -211,6 +213,8 @@ def parse_returns(game_string, num_players):
     if not match:
         raise RuntimeError("terminal game_string has no RE property")
     values = [float(token) for token in match.group(1).split(",")]
+    if num_players == 2 and len(values) == 1:
+        values.append(-values[0])
     if len(values) != num_players:
         raise RuntimeError(f"expected {num_players} returns, got {values}")
     return values
@@ -266,7 +270,7 @@ def write_sgf(path, game, game_name):
     path.write_text(content + ")\n")
 
 
-def run_seating(task, config, output_dir, completed, result_queue):
+def run_seating(task, config, output_dir, completed, result_queue, worker_id, gpu):
     games = [game for game in task.games if game.game_id not in completed]
     if not games:
         return
@@ -281,6 +285,9 @@ def run_seating(task, config, output_dir, completed, result_queue):
                 "seat": config["players"][seat],
                 "seat_index": seat,
                 "seed": config["seed"] + task.task_id * len(seating) + seat,
+                "task_id": task.task_id,
+                "worker_id": worker_id,
+                "gpu": gpu,
             }
             stderr_path = stderr_dir / f"task_{task.task_id:04d}_seat_{seat + 1}_{safe_name(agent_name)}.log"
             engines.append(Engine(config["agents"][agent_name], context, config["command_timeout"], stderr_path))
@@ -360,14 +367,14 @@ def safe_name(value):
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", value)
 
 
-def worker(tasks, config, output_dir, completed, result_queue):
+def worker(worker_id, gpu, tasks, config, output_dir, completed, result_queue):
     while True:
         try:
             task = tasks.get_nowait()
         except queue.Empty:
             return
         try:
-            run_seating(task, config, output_dir, completed, result_queue)
+            run_seating(task, config, output_dir, completed, result_queue, worker_id, gpu)
         finally:
             tasks.task_done()
 
@@ -500,6 +507,23 @@ def prepare_output(output_dir, resume, overwrite):
     return results_path
 
 
+def parse_gpu_list(value):
+    if value is None:
+        return []
+    value = value.strip()
+    if not value:
+        return []
+    if "," in value:
+        devices = [device.strip() for device in value.split(",") if device.strip()]
+    elif value.isdigit():
+        devices = list(value)
+    else:
+        devices = value.split()
+    if not devices:
+        raise ValueError("GPU list is empty")
+    return devices
+
+
 def run(args):
     config = load_manifest(args.manifest)
     if args.games_per_seating is not None:
@@ -530,11 +554,23 @@ def run(args):
     total_pending = sum(1 for task in schedule for game in task.games if game.game_id not in completed)
     try:
         with results_path.open(mode) as stream:
-            num_threads = max(1, min(args.threads, task_queue.qsize() or 1))
+            gpus = parse_gpu_list(args.gpu)
+            worker_devices = [gpu for _ in range(args.num_threads) for gpu in gpus] if gpus else [""] * args.num_threads
+            worker_devices = worker_devices[:max(1, min(len(worker_devices), task_queue.qsize() or 1))]
             threads = [
-                threading.Thread(target=worker, args=(task_queue, config, output_dir, completed, result_queue), daemon=True)
-                for _ in range(num_threads)
+                threading.Thread(
+                    target=worker,
+                    args=(worker_id, gpu, task_queue, config, output_dir, completed, result_queue),
+                    daemon=True,
+                )
+                for worker_id, gpu in enumerate(worker_devices)
             ]
+            if total_pending:
+                assignment = ", ".join(
+                    f"worker {worker_id}={'GPU ' + gpu if gpu else 'inherited device environment'}"
+                    for worker_id, gpu in enumerate(worker_devices)
+                )
+                print(f"arena workers: {assignment}", flush=True)
             for thread in threads:
                 thread.start()
 
@@ -571,14 +607,21 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("manifest", help="JSON arena manifest")
     parser.add_argument("output", help="output directory")
-    parser.add_argument("--threads", type=int, default=1, help="parallel seatings (each launches one engine per seat)")
+    parser.add_argument("-g", "--gpu", help="GPU list, matching other MiniZero tools (for example 0123 or 0,1,2,3)")
+    parser.add_argument(
+        "--num_threads", "--num-threads", "--threads",
+        dest="num_threads",
+        type=int,
+        default=1,
+        help="parallel seating workers per GPU (or total workers when -g is omitted)",
+    )
     parser.add_argument("--games-per-seating", type=int, help="override manifest value")
     parser.add_argument("--max-moves", type=int, help="override manifest value")
     parser.add_argument("--resume", action="store_true", help="skip game IDs already present in games.jsonl")
     parser.add_argument("--overwrite", action="store_true", help="replace games.jsonl and summaries")
     args = parser.parse_args()
-    if args.threads < 1 or (args.games_per_seating is not None and args.games_per_seating < 1):
-        parser.error("--threads and --games-per-seating must be positive")
+    if args.num_threads < 1 or (args.games_per_seating is not None and args.games_per_seating < 1):
+        parser.error("--num_threads and --games-per-seating must be positive")
     run(args)
 
 

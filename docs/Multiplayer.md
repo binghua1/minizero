@@ -43,6 +43,7 @@ Create a JSON manifest such as:
     {
       "name": "iter_1000",
       "cwd": "/workspace/minizero",
+      "env": {"OMP_NUM_THREADS": "2"},
       "command": [
         "build/tictacmo/minizero_tictacmo", "-mode", "console",
         "-conf_file", "/workspace/tictacmo/run.cfg",
@@ -52,6 +53,7 @@ Create a JSON manifest such as:
     {
       "name": "iter_5000",
       "cwd": "/workspace/minizero",
+      "env": {"OMP_NUM_THREADS": "2"},
       "command": [
         "build/tictacmo/minizero_tictacmo", "-mode", "console",
         "-conf_file", "/workspace/tictacmo/run.cfg",
@@ -61,6 +63,7 @@ Create a JSON manifest such as:
     {
       "name": "iter_15000",
       "cwd": "/workspace/minizero",
+      "env": {"OMP_NUM_THREADS": "2"},
       "command": [
         "build/tictacmo/minizero_tictacmo", "-mode", "console",
         "-conf_file", "/workspace/tictacmo/run.cfg",
@@ -77,10 +80,10 @@ Create a JSON manifest such as:
 }
 ```
 
-`{seed}`, `{seat}`, `{seat_index}`, and `{agent}` in commands or environment variables are replaced when each engine starts. Run the arena inside the normal MiniZero/Podman environment:
+`{seed}`, `{seat}`, `{seat_index}`, `{agent}`, `{gpu}`, `{worker_id}`, and `{task_id}` in commands or environment variables are replaced when each engine starts. Run the arena inside the normal MiniZero/Podman environment:
 
 ```bash
-python3 tools/multiplayer-eval.py arena.json evaluation/tictacmo_crossplay --threads 1
+python3 tools/multiplayer-eval.py arena.json evaluation/tictacmo_crossplay -g 0123 --num_threads 1
 ```
 
 The output directory contains:
@@ -92,7 +95,7 @@ The output directory contains:
 - `seating_summary.csv`: matchup results for every exact model-to-seat assignment.
 - `errors.csv` and `engine_logs/`: failed games and engine diagnostics.
 
-Use `--resume` to skip recorded game IDs after an interrupted evaluation. `--overwrite` starts the scheduled evaluation again. One evaluation thread launches one engine process per seat, so increase `--threads` only when GPU memory can hold the additional models.
+Use `--resume` to skip recorded game IDs after an interrupted evaluation. `--overwrite` starts the scheduled evaluation again. `-g 0123 --num_threads 2` uses GPUs 0, 1, 2, and 3 with two parallel seating workers per GPU. All engines in one seating share that worker's physical GPU and see it as logical CUDA device 0. One worker launches one engine process per seat, so increase `--num_threads` only when each GPU has enough memory for the additional model copies. Agent `env` entries can set CPU controls such as `OMP_NUM_THREADS` and can explicitly override `CUDA_VISIBLE_DEVICES` when a custom placement is required.
 
 ## Training constraints
 

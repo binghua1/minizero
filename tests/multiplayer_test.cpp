@@ -49,6 +49,33 @@ int main()
     assert(player2_edge->getMean() == -0.25f);
     assert(player3_edge->getMean() == -0.75f);
 
+    MCTS scalar_two_player_mcts(4);
+    scalar_two_player_mcts.reset();
+    MCTSNode* scalar_root = scalar_two_player_mcts.getRootNode();
+    scalar_two_player_mcts.expand(scalar_root, {{Action(0, Player::kPlayer1), 1.0f, 0.0f}});
+    MCTSNode* scalar_player1_edge = scalar_root->getChild(0);
+    scalar_two_player_mcts.expand(scalar_player1_edge, {{Action(1, Player::kPlayer2), 1.0f, 0.0f}});
+    MCTSNode* scalar_player2_edge = scalar_player1_edge->getChild(0);
+    scalar_two_player_mcts.backup({scalar_root, scalar_player1_edge, scalar_player2_edge}, 0.6f);
+
+    MCTS vector_two_player_mcts(4);
+    vector_two_player_mcts.reset();
+    vector_two_player_mcts.setRootPlayer(Player::kPlayer1);
+    MCTSNode* vector_root = vector_two_player_mcts.getRootNode();
+    vector_two_player_mcts.expand(vector_root, {{Action(0, Player::kPlayer1), 1.0f, 0.0f}});
+    MCTSNode* vector_player1_edge = vector_root->getChild(0);
+    vector_two_player_mcts.expand(vector_player1_edge, {{Action(1, Player::kPlayer2), 1.0f, 0.0f}});
+    MCTSNode* vector_player2_edge = vector_player1_edge->getChild(0);
+    const PlayerValues zero_sum_values{0.6f, -0.6f};
+    vector_two_player_mcts.backup({vector_root, vector_player1_edge, vector_player2_edge}, zero_sum_values);
+
+    assert(scalar_root->getNormalizedMean(scalar_two_player_mcts.getTreeValueBound()) ==
+           vector_root->getNormalizedMean(vector_two_player_mcts.getTreeValueBound(), true));
+    assert(scalar_player1_edge->getNormalizedMean(scalar_two_player_mcts.getTreeValueBound()) ==
+           vector_player1_edge->getNormalizedMean(vector_two_player_mcts.getTreeValueBound(), true));
+    assert(scalar_player2_edge->getNormalizedMean(scalar_two_player_mcts.getTreeValueBound()) ==
+           vector_player2_edge->getNormalizedMean(vector_two_player_mcts.getTreeValueBound(), true));
+
     zero::ZeroSelfPlayData multiplayer_data("SelfPlay true 10 10 1,-1,-1 (;GM[tictacmo]RE[1,-1,-1]) #");
     assert(multiplayer_data.return_ == 1.0f);
     assert(multiplayer_data.returns_ == std::vector<float>({1.0f, -1.0f, -1.0f}));

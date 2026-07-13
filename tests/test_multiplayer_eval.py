@@ -38,7 +38,7 @@ class MultiplayerEvalTest(unittest.TestCase):
             output = temp / "output"
 
             subprocess.run(
-                [sys.executable, str(ARENA), str(manifest_path), str(output), "--threads", "2"],
+                [sys.executable, str(ARENA), str(manifest_path), str(output), "--num_threads", "2"],
                 cwd=REPO_ROOT,
                 check=True,
                 capture_output=True,
@@ -81,6 +81,42 @@ class MultiplayerEvalTest(unittest.TestCase):
                 text=True,
             )
             self.assertEqual(len((output / "games.jsonl").read_text().splitlines()), 6)
+
+    def test_legacy_two_player_scalar_result(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            command = [sys.executable, str(FAKE_ENGINE), "--num-players", "2"]
+            manifest = {
+                "game": "fake2",
+                "players": ["b", "w"],
+                "agents": [
+                    {"name": "old", "command": command},
+                    {"name": "new", "command": command},
+                ],
+                "seat_mode": "all_permutations",
+                "games_per_seating": 1,
+                "max_moves": 2,
+                "command_timeout": 5,
+            }
+            manifest_path = temp / "manifest.json"
+            manifest_path.write_text(json.dumps(manifest))
+            output = temp / "output"
+            subprocess.run(
+                [sys.executable, str(ARENA), str(manifest_path), str(output), "-g", "01", "--num_threads", "1"],
+                cwd=REPO_ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            games = [json.loads(line) for line in (output / "games.jsonl").read_text().splitlines()]
+            self.assertEqual(len(games), 2)
+            self.assertTrue(all(game["returns"] == [1.0, -1.0] for game in games))
+            engine_logs = [path.read_text() for path in (output / "engine_logs").glob("*.log")]
+            self.assertTrue(any("CUDA_VISIBLE_DEVICES=0" in log for log in engine_logs))
+            self.assertTrue(any("CUDA_VISIBLE_DEVICES=1" in log for log in engine_logs))
+            with (output / "agent_summary.csv").open() as stream:
+                summaries = list(csv.DictReader(stream))
+            self.assertTrue(all(int(row["wins"]) == 1 and int(row["losses"]) == 1 for row in summaries))
 
 
 if __name__ == "__main__":
