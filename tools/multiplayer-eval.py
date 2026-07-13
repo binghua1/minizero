@@ -973,7 +973,9 @@ def self_eval_main(argv):
     parser.add_argument("--executable", help="engine executable (default: build/GAME/minizero_GAME)")
     parser.add_argument("-g", "--gpu", help="GPU list, for example 0123 or 0,1,2,3")
     parser.add_argument("--num_threads", "--num-threads", "--threads", dest="num_threads", type=int, default=1)
-    parser.add_argument("--overwrite", action="store_true")
+    resume_mode = parser.add_mutually_exclusive_group()
+    resume_mode.add_argument("--resume", action="store_true", help="continue existing pairs using their saved arena manifests")
+    resume_mode.add_argument("--overwrite", action="store_true")
     parser.add_argument("--dry-run", action="store_true", help="only generate pair arena manifests")
     args = parser.parse_args(argv)
     args.game = args.game.lower()
@@ -1024,11 +1026,20 @@ def self_eval_main(argv):
             with manifest_path.open() as stream:
                 previous_manifest = json.load(stream)
             if previous_manifest != manifest:
-                raise ValueError(f"generated settings differ from existing self-eval pair: {manifest_path}; use --overwrite")
-        with manifest_path.open("w") as stream:
-            json.dump(manifest, stream, indent=2)
-            stream.write("\n")
-        print(f"checkpoint pair {newer_iteration} vs {older_iteration}: {args.games} total games", flush=True)
+                if not args.resume:
+                    raise ValueError(
+                        f"generated settings differ from existing self-eval pair: {manifest_path}; "
+                        "use --resume to continue its saved settings or --overwrite to replace it"
+                    )
+                manifest = previous_manifest
+                print(f"checkpoint pair {newer_iteration} vs {older_iteration}: continuing saved arena settings", flush=True)
+        if not (args.resume and manifest_path.exists()):
+            with manifest_path.open("w") as stream:
+                json.dump(manifest, stream, indent=2)
+                stream.write("\n")
+        scheduled_games = manifest.get("num_games")
+        game_description = f"{scheduled_games} total games" if scheduled_games is not None else "saved seating schedule"
+        print(f"checkpoint pair {newer_iteration} vs {older_iteration}: {game_description}", flush=True)
         if args.dry_run:
             continue
 

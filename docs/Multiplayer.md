@@ -113,6 +113,8 @@ python3 tools/multiplayer-eval.py self-eval connect3x3 connect3x3_maxn_smoke_01 
 
 Use `--search-type paranoid` to evaluate Paranoid-trained checkpoints. Like the original quick-run self-evaluation, action selection and Dirichlet noise are inherited from the selected config by default. Use `--noise` or `--no-noise` to override only the noise setting. Every engine receives a deterministic per-seating seed, so noise produces different games while the complete experiment remains reproducible. A checkpoint wins a multiplayer game when any seat using that checkpoint wins; the sequential Elo score uses the balanced pair win rate, with a draw worth one half.
 
+Rerunning an identical command automatically skips completed game IDs. If the current config or generated settings differ, add `--resume` to continue each existing pair with its saved `arena.json` settings; this prevents old and new settings from being mixed within a pair. Use `--overwrite` only when the existing pair results should be replaced.
+
 ### Search-algorithm arenas
 
 For the common case of comparing MaxN and Paranoid with the same trained model, use auto mode:

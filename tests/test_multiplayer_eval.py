@@ -53,6 +53,34 @@ class MultiplayerEvalTest(unittest.TestCase):
                 text=True,
             )
 
+            first_manifest = (output / "500_vs_0" / "arena.json").read_text()
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(ARENA),
+                    "self-eval",
+                    "connect3x3",
+                    str(training),
+                    "--conf-file",
+                    str(config),
+                    "--interval",
+                    "1",
+                    "--games",
+                    "10",
+                    "--no-noise",
+                    "--resume",
+                    "--executable",
+                    str(FAKE_ENGINE),
+                    "--output",
+                    str(output),
+                ],
+                cwd=REPO_ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual((output / "500_vs_0" / "arena.json").read_text(), first_manifest)
+
             pair_names = ("500_vs_0", "1000_vs_500")
             for pair_name in pair_names:
                 pair_dir = output / pair_name

@@ -35,6 +35,10 @@ usage() {
     self-eval)
         echo "Usage: $0 self-eval GAME_TYPE FOLDER [CONF_FILE] [INTERVAL] [GAMENUM] [OPTION]..."
         find ./ ../ -maxdepth 2 -name self-eval.sh -exec {} -h \; -quit | tail -n+2 | grep -Ev "^ +-[hb][, ]|sp_executable_file"
+        echo "             --resume               Continue multiplayer pairs using their saved arena manifests"
+        echo "             --overwrite            Replace existing multiplayer pair results"
+        echo "             --noise                Enable multiplayer Dirichlet noise"
+        echo "             --no-noise             Disable multiplayer Dirichlet noise"
         ;;
     fight-eval)
         echo "Usage: $0 fight-eval GAME_TYPE FOLDER1 FOLDER2 [CONF_FILE1] [CONF_FILE2] [INTERVAL] [GAMENUM] [OPTION]..."
@@ -202,6 +206,10 @@ while [[ $1 ]]; do
     -gen)               gen_conf_file=$2; shift; ;;
     -s)                 eval_start_index=$2; shift; ;;
     -d)                 eval_folder_name=$2; shift; ;;
+    --resume)           eval_resume=true; ;;
+    --overwrite)        eval_overwrite=true; ;;
+    --noise)            eval_noise=true; ;;
+    --no-noise)         eval_noise=false; ;;
     -p|--port)          port=$2; zero_server_port=$2; shift; ;;
     -h)                 usage $mode; exit 0; ;;
     *)                  log ERR "Unsupported argument: $1"; exit 1; ;;
@@ -516,8 +524,16 @@ elif [[ $mode == self-eval ]]; then # ================================ SELF-EVAL
             --executable "$executable"
         )
         [[ $conf_str ]] && opts+=(-conf_str "$conf_str")
+        [[ $eval_resume == true ]] && opts+=(--resume)
+        [[ $eval_overwrite == true ]] && opts+=(--overwrite)
+        [[ $eval_noise == true ]] && opts+=(--noise)
+        [[ $eval_noise == false ]] && opts+=(--no-noise)
         $launch python3 tools/multiplayer-eval.py self-eval $game $eval_dir "${opts[@]}" 2>&1 | colorize OUT_EVAL
     else
+        if [[ $eval_overwrite || $eval_noise ]]; then
+            log ERR "--overwrite and --[no-]noise are only supported by multiplayer self-eval"
+            exit 1
+        fi
         opts=()
         opts+=(-g ${CUDA_VISIBLE_DEVICES//,/})
         opts+=(-s "$eval_start_index")
