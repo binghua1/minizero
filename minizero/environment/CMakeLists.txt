@@ -7,6 +7,7 @@ target_include_directories(
     base
     amazons
     atari
+    blokus
     breakthrough
     clobber
     conhex

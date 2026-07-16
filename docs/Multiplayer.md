@@ -1,5 +1,7 @@
 # Multiplayer AlphaZero
 
+The classic four-player Blokus environment and its large spatial action representation are documented in [Blokus.md](Blokus.md). A proposed path from the current AlphaZero-only multiplayer implementation to competitive general-sum MuZero is in [MultiplayerMuZeroResearch.md](MultiplayerMuZeroResearch.md).
+
 MiniZero's multiplayer AlphaZero path uses an absolute utility vector at network leaves and terminal states. MCTS edges remain scalar, with selectable MaxN or Paranoid backup semantics.
 
 - `actor_multiplayer_search_type=maxn` stores the utility component of the player who selected each edge, so every player maximizes their own value.

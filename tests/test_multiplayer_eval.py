@@ -15,6 +15,35 @@ FAKE_ENGINE = REPO_ROOT / "tests" / "fake_multiplayer_engine.py"
 
 
 class MultiplayerEvalTest(unittest.TestCase):
+    def test_blokus_elimination_passes_skip_players_and_end_after_four(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            output = temp / "output"
+            command = [sys.executable, str(FAKE_ENGINE), "--num-players", "4", "--pass-only"]
+            manifest = {
+                "game": "blokus",
+                "players": ["b", "w", "r", "g"],
+                "agents": [{"name": "passer", "command": command}],
+                "lineups": [["passer"] * 4],
+                "seat_mode": "fixed",
+                "games_per_seating": 1,
+                "max_moves": 10,
+                "terminal_passes": 4,
+            }
+            manifest_path = temp / "arena.json"
+            manifest_path.write_text(json.dumps(manifest))
+            subprocess.run(
+                [sys.executable, str(ARENA), str(manifest_path), str(output)],
+                cwd=REPO_ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            game = json.loads((output / "games.jsonl").read_text())
+            self.assertFalse(game["error"])
+            self.assertEqual(game["returns"], [1.0, -1.0, -1.0, -1.0])
+            self.assertEqual([move["player"] for move in game["moves"]], ["b", "w", "r", "g"])
+
     def test_self_eval_pairs_checkpoints_and_uses_total_game_count(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp = Path(temp_dir)
@@ -169,6 +198,38 @@ class MultiplayerEvalTest(unittest.TestCase):
 
             manifest = json.loads((output / "arena.json").read_text())
             self.assertEqual(manifest["max_moves"], 42)
+
+    def test_auto_mode_uses_blokus_player_and_pass_defaults(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            training = temp / "blokus_run"
+            (training / "model").mkdir(parents=True)
+            (training / "run.cfg").write_text("actor_num_simulation=50\n")
+            (training / "model" / "weight_iter_1.pt").touch()
+            output = temp / "evaluation"
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(ARENA),
+                    "auto",
+                    "blokus",
+                    str(training),
+                    "--executable",
+                    str(FAKE_ENGINE),
+                    "--output",
+                    str(output),
+                    "--dry-run",
+                ],
+                cwd=REPO_ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            manifest = json.loads((output / "arena.json").read_text())
+            self.assertEqual(manifest["players"], ["b", "w", "r", "g"])
+            self.assertEqual(manifest["max_moves"], 400)
+            self.assertEqual(manifest["terminal_passes"], 4)
+            self.assertTrue(all(len(lineup) == 4 for lineup in manifest["lineups"]))
 
     def test_auto_mode_generates_balanced_search_arena(self):
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -20,7 +20,7 @@ from pathlib import Path
 
 
 PLAYER_CODES = ("b", "w", "r", "g", "y", "p")
-DEFAULT_MAX_MOVES = {"tictacmo": 15, "connect3x3": 42}
+DEFAULT_MAX_MOVES = {"tictacmo": 15, "connect3x3": 42, "blokus": 400}
 DEFAULT_EVAL_OVERRIDES = {
     "actor_use_gumbel": "false",
     "actor_use_gumbel_noise": "false",
@@ -195,6 +195,7 @@ def load_manifest(path):
         "games_per_seating": int(data.get("games_per_seating", 1)),
         "num_games": int(data["num_games"]) if data.get("num_games") is not None else None,
         "max_moves": int(data.get("max_moves", 2048)),
+        "terminal_passes": int(data.get("terminal_passes", 1)),
         "command_timeout": float(data.get("command_timeout", 300)),
         "seed": int(data.get("seed", 0)),
     }
@@ -202,7 +203,7 @@ def load_manifest(path):
         raise ValueError("seat_mode must be fixed, cyclic, or all_permutations")
     if (config["games_per_seating"] < 1 or
             (config["num_games"] is not None and config["num_games"] < 1) or
-            config["max_moves"] < 1 or config["command_timeout"] <= 0):
+            config["max_moves"] < 1 or config["terminal_passes"] < 1 or config["command_timeout"] <= 0):
         raise ValueError("game counts, max_moves, and command_timeout must be positive")
     return config
 
@@ -295,19 +296,28 @@ def result_info(returns):
     return (winners[0], False) if len(winners) == 1 else (None, True)
 
 
-def play_game(engines, players, max_moves):
+def play_game(engines, players, max_moves, terminal_passes=1):
     for engine in engines:
         engine.command_response("clear_board")
 
     moves = []
     turn = 0
+    eliminated = set()
     for ply in range(max_moves + 1):
         action = engines[turn].command_response(f"genmove {players[turn]}").strip()
         if action.upper() == "PASS":
-            game_string = engines[turn].command_response("game_string")
-            returns = parse_returns(game_string, len(players))
-            winner_seat, draw = result_info(returns)
-            return moves, returns, winner_seat, draw
+            if terminal_passes == 1:
+                game_string = engines[turn].command_response("game_string")
+                returns = parse_returns(game_string, len(players))
+                winner_seat, draw = result_info(returns)
+                return moves, returns, winner_seat, draw
+            eliminated.add(turn)
+            if len(eliminated) >= terminal_passes:
+                moves.append({"player": players[turn], "action": action})
+                game_string = engines[turn].command_response("game_string")
+                returns = parse_returns(game_string, len(players))
+                winner_seat, draw = result_info(returns)
+                return moves, returns, winner_seat, draw
         if action.lower() == "resign":
             raise RuntimeError("multiplayer resignation has no generic winner semantics; disable resignation")
         if ply == max_moves:
@@ -318,6 +328,8 @@ def play_game(engines, players, max_moves):
             if seat != turn:
                 engine.command_response(f"play {players[turn]} {action}")
         turn = (turn + 1) % len(players)
+        while turn in eliminated:
+            turn = (turn + 1) % len(players)
 
     raise AssertionError("unreachable")
 
@@ -378,7 +390,7 @@ def run_seating(task, config, output_dir, completed, result_queue, worker_id, gp
                 "error": None,
             }
             try:
-                moves, returns, winner_seat, draw = play_game(engines, config["players"], config["max_moves"])
+                moves, returns, winner_seat, draw = play_game(engines, config["players"], config["max_moves"], config.get("terminal_passes", 1))
                 record.update({
                     "moves": moves,
                     "returns": returns,
@@ -684,6 +696,7 @@ def create_auto_manifest(args, repo_root, models, configs, executable):
         "seat_mode": "all_permutations",
         "games_per_seating": args.games_per_seating,
         "max_moves": args.max_moves if args.max_moves is not None else DEFAULT_MAX_MOVES.get(args.game, 2048),
+        "terminal_passes": 4 if args.game == "blokus" else 1,
         "command_timeout": args.command_timeout,
         "seed": args.seed,
     }
@@ -705,7 +718,7 @@ def auto_main(argv):
     parser.add_argument("--executable", help="engine executable (default: build/GAME/minizero_GAME)")
     parser.add_argument("--output", help="output directory (default: TRAINING_DIR/evaluation/MODEL_SEARCHES)")
     parser.add_argument("--search-types", nargs="+", default=["maxn", "paranoid"], choices=("maxn", "paranoid"))
-    parser.add_argument("--num-players", type=int, default=3)
+    parser.add_argument("--num-players", type=int)
     parser.add_argument("--num-simulations", type=int, help="override actor_num_simulation")
     parser.add_argument("--noise", action="store_true", help="enable Dirichlet noise for varied reproducible games")
     parser.add_argument("--games-per-seating", type=int, default=1)
@@ -720,6 +733,8 @@ def auto_main(argv):
     parser.add_argument("--dry-run", action="store_true", help="only generate arena.json")
     args = parser.parse_args(argv)
     args.game = args.game.lower()
+    if args.num_players is None:
+        args.num_players = 4 if args.game == "blokus" else 3
 
     if not 2 <= args.num_players <= len(PLAYER_CODES):
         parser.error(f"--num-players must be between 2 and {len(PLAYER_CODES)}")
@@ -888,6 +903,7 @@ def create_checkpoint_manifest(args, repo_root, executable, config, older, newer
         "seat_mode": "all_permutations",
         "num_games": args.games,
         "max_moves": args.max_moves if args.max_moves is not None else DEFAULT_MAX_MOVES.get(args.game, 2048),
+        "terminal_passes": 4 if args.game == "blokus" else 1,
         "command_timeout": args.command_timeout,
         "seed": args.seed,
         "self_eval": {
@@ -959,7 +975,7 @@ def self_eval_main(argv):
     parser.add_argument("-s", "--start-index", type=int, default=0)
     parser.add_argument("-d", "--output", help="result directory (default: TRAINING_DIR/self_eval)")
     parser.add_argument("--search-type", choices=("maxn", "paranoid"), help="default: value from config, or maxn")
-    parser.add_argument("--num-players", type=int, default=3)
+    parser.add_argument("--num-players", type=int)
     parser.add_argument("--num-simulations", type=int)
     noise_group = parser.add_mutually_exclusive_group()
     noise_group.add_argument("--noise", dest="noise", action="store_true", help="enable Dirichlet noise")
@@ -979,6 +995,8 @@ def self_eval_main(argv):
     parser.add_argument("--dry-run", action="store_true", help="only generate pair arena manifests")
     args = parser.parse_args(argv)
     args.game = args.game.lower()
+    if args.num_players is None:
+        args.num_players = 4 if args.game == "blokus" else 3
 
     positive = (args.interval, args.games, args.num_players, args.command_timeout,
                 args.omp_num_threads, args.num_threads)

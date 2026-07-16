@@ -35,7 +35,8 @@ class AlphaZeroNetwork(nn.Module):
         self.conv = nn.Conv2d(num_input_channels, num_hidden_channels, kernel_size=3, padding=1)
         self.bn = nn.BatchNorm2d(num_hidden_channels)
         self.residual_blocks = nn.ModuleList([ResidualBlock(num_hidden_channels) for _ in range(num_blocks)])
-        self.policy = PolicyNetwork(num_hidden_channels, hidden_channel_height, hidden_channel_width, action_size)
+        self.policy = PolicyNetwork(num_hidden_channels, hidden_channel_height, hidden_channel_width, action_size,
+                                    fully_convolutional=(game_name == "blokus"))
         if self.discrete_value_size == 1:
             value_output_size = num_players if num_players > 2 else 1
             self.value = ValueNetwork(num_hidden_channels, hidden_channel_height, hidden_channel_width, num_value_hidden_channels, value_output_size)

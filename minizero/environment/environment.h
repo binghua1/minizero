@@ -12,6 +12,11 @@ typedef minizero::env::amazons::AmazonsEnvLoader EnvironmentLoader;
 typedef minizero::env::atari::AtariAction Action;
 typedef minizero::env::atari::AtariEnv Environment;
 typedef minizero::env::atari::AtariEnvLoader EnvironmentLoader;
+#elif BLOKUS
+#include "blokus.h"
+typedef minizero::env::blokus::BlokusAction Action;
+typedef minizero::env::blokus::BlokusEnv Environment;
+typedef minizero::env::blokus::BlokusEnvLoader EnvironmentLoader;
 #elif BREAKTHROUGH
 #include "breakthrough.h"
 typedef minizero::env::breakthrough::BreakthroughAction Action;

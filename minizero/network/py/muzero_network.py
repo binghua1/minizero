@@ -38,9 +38,9 @@ class MuZeroDynamicsNetwork(nn.Module):
 
 
 class MuZeroPredictionNetwork(nn.Module):
-    def __init__(self, num_channels, channel_height, channel_width, action_size, num_value_hidden_channels):
+    def __init__(self, num_channels, channel_height, channel_width, action_size, num_value_hidden_channels, fully_convolutional=False):
         super(MuZeroPredictionNetwork, self).__init__()
-        self.policy = PolicyNetwork(num_channels, channel_height, channel_width, action_size)
+        self.policy = PolicyNetwork(num_channels, channel_height, channel_width, action_size, fully_convolutional)
         self.value = ValueNetwork(num_channels, channel_height, channel_width, num_value_hidden_channels)
 
     def forward(self, hidden_state):
@@ -79,7 +79,8 @@ class MuZeroNetwork(nn.Module):
 
         self.representation_network = MuZeroRepresentationNetwork(num_input_channels, num_hidden_channels, num_blocks)
         self.dynamics_network = MuZeroDynamicsNetwork(num_hidden_channels, num_action_feature_channels, num_blocks)
-        self.prediction_network = MuZeroPredictionNetwork(num_hidden_channels, hidden_channel_height, hidden_channel_width, action_size, num_value_hidden_channels)
+        self.prediction_network = MuZeroPredictionNetwork(num_hidden_channels, hidden_channel_height, hidden_channel_width, action_size, num_value_hidden_channels,
+                                                          fully_convolutional=(game_name == "blokus"))
 
     @torch.jit.export
     def get_type_name(self):
