@@ -98,7 +98,11 @@ void ZeroActor::afterNNEvaluation(const std::shared_ptr<NetworkOutput>& network_
         }
     } else if (muzero_network_) {
         std::shared_ptr<MuZeroNetworkOutput> muzero_output = std::static_pointer_cast<MuZeroNetworkOutput>(network_output);
-        getMCTS()->expand(leaf_node, calculateMuZeroActionPolicy(leaf_node, muzero_output));
+        // The root corresponds to the real environment, so its exact legal actions
+        // are available. Non-root MuZero nodes only have learned latent states and
+        // must keep the full action space unless a real environment is supplied.
+        const Environment* legal_action_env = (leaf_node == getMCTS()->getRootNode() ? &env_ : nullptr);
+        getMCTS()->expand(leaf_node, calculateMuZeroActionPolicy(leaf_node, muzero_output, legal_action_env));
         getMCTS()->backup(node_path, muzero_output->value_, muzero_output->reward_);
         leaf_node->setHiddenStateDataIndex(getMCTS()->getTreeHiddenStateData().store(HiddenStateData(muzero_output->hidden_state_)));
     } else {
@@ -239,11 +243,25 @@ void ZeroActor::addNoiseToNodeChildren(MCTSNode* node)
 std::vector<MCTS::ActionCandidate> ZeroActor::calculateAlphaZeroActionPolicy(const Environment& env_transition, const std::shared_ptr<network::AlphaZeroNetworkOutput>& alphazero_output, const utils::Rotation& rotation)
 {
     assert(alphazero_network_);
+    if (alphazero_output->policy_.size() != alphazero_output->policy_logits_.size()) {
+        throw std::runtime_error("AlphaZero policy and policy-logit sizes do not match");
+    }
+
+    const std::vector<Action> legal_actions = env_transition.getLegalActions();
     std::vector<MCTS::ActionCandidate> action_candidates;
-    for (size_t action_id = 0; action_id < alphazero_output->policy_.size(); ++action_id) {
-        Action action(action_id, env_transition.getTurn());
-        if (!env_transition.isLegalAction(action)) { continue; }
+    action_candidates.reserve(legal_actions.size());
+    for (const Action& action : legal_actions) {
+        const int action_id = action.getActionID();
+        if (action_id < 0 || action_id >= static_cast<int>(alphazero_output->policy_.size())) {
+            throw std::runtime_error("legal action ID is outside the AlphaZero policy range");
+        }
+#ifndef NDEBUG
+        assert(env_transition.isLegalAction(action));
+#endif
         int rotated_id = env_transition.getRotateAction(action_id, rotation);
+        if (rotated_id < 0 || rotated_id >= static_cast<int>(alphazero_output->policy_.size())) {
+            throw std::runtime_error("rotated action ID is outside the AlphaZero policy range");
+        }
         action_candidates.push_back(MCTS::ActionCandidate(action, alphazero_output->policy_[rotated_id], alphazero_output->policy_logits_[rotated_id]));
     }
     sort(action_candidates.begin(), action_candidates.end(), [](const MCTS::ActionCandidate& lhs, const MCTS::ActionCandidate& rhs) {
@@ -252,15 +270,34 @@ std::vector<MCTS::ActionCandidate> ZeroActor::calculateAlphaZeroActionPolicy(con
     return action_candidates;
 }
 
-std::vector<MCTS::ActionCandidate> ZeroActor::calculateMuZeroActionPolicy(MCTSNode* leaf_node, const std::shared_ptr<network::MuZeroNetworkOutput>& muzero_output)
+std::vector<MCTS::ActionCandidate> ZeroActor::calculateMuZeroActionPolicy(MCTSNode* leaf_node, const std::shared_ptr<network::MuZeroNetworkOutput>& muzero_output, const Environment* legal_action_env)
 {
     assert(muzero_network_);
+    if (muzero_output->policy_.size() != muzero_output->policy_logits_.size()) {
+        throw std::runtime_error("MuZero policy and policy-logit sizes do not match");
+    }
+
     std::vector<MCTS::ActionCandidate> action_candidates;
-    env::Player turn = leaf_node->getAction().nextPlayer();
-    for (size_t action_id = 0; action_id < muzero_output->policy_.size(); ++action_id) {
-        const Action action(action_id, turn);
-        if (leaf_node == getMCTS()->getRootNode() && !env_.isLegalAction(action)) { continue; }
-        action_candidates.push_back(MCTS::ActionCandidate(action, muzero_output->policy_[action_id], muzero_output->policy_logits_[action_id]));
+    if (legal_action_env) {
+        const std::vector<Action> legal_actions = legal_action_env->getLegalActions();
+        action_candidates.reserve(legal_actions.size());
+        for (const Action& action : legal_actions) {
+            const int action_id = action.getActionID();
+            if (action_id < 0 || action_id >= static_cast<int>(muzero_output->policy_.size())) {
+                throw std::runtime_error("legal action ID is outside the MuZero policy range");
+            }
+#ifndef NDEBUG
+            assert(legal_action_env->isLegalAction(action));
+#endif
+            action_candidates.push_back(MCTS::ActionCandidate(action, muzero_output->policy_[action_id], muzero_output->policy_logits_[action_id]));
+        }
+    } else {
+        const env::Player turn = leaf_node->getAction().nextPlayer();
+        action_candidates.reserve(muzero_output->policy_.size());
+        for (size_t action_id = 0; action_id < muzero_output->policy_.size(); ++action_id) {
+            const Action action(action_id, turn);
+            action_candidates.push_back(MCTS::ActionCandidate(action, muzero_output->policy_[action_id], muzero_output->policy_logits_[action_id]));
+        }
     }
     sort(action_candidates.begin(), action_candidates.end(), [](const MCTS::ActionCandidate& lhs, const MCTS::ActionCandidate& rhs) {
         return lhs.policy_ > rhs.policy_;
