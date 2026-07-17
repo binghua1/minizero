@@ -85,6 +85,8 @@ public:
     Player getPlayerAt(int row, int col) const;
 
 private:
+    std::vector<BlokusCell> getRequiredContactPoints(Player player) const;
+    std::array<bool, kBlokusBoardArea> getCandidateAnchors(const BlokusOrientation& orientation, const std::vector<BlokusCell>& contact_points) const;
     bool isPlacementLegal(int action_id, Player player) const;
     bool hasPlacement(Player player) const;
     bool isFirstMove(Player player) const;

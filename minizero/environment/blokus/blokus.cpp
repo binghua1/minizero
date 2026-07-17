@@ -179,19 +179,70 @@ std::vector<BlokusAction> BlokusEnv::getLegalActions() const
     const int player_index = playerToIndex(turn_);
     if (!eliminated_[player_index]) {
         const auto& orientations = getBlokusOrientations();
+        const std::vector<BlokusCell> contact_points = getRequiredContactPoints(turn_);
         for (int orientation_index = 0; orientation_index < static_cast<int>(orientations.size()); ++orientation_index) {
             const BlokusOrientation& orientation = orientations[orientation_index];
             if (!available_[player_index][orientation.piece]) { continue; }
-            for (int row = 0; row <= kBlokusBoardSize - orientation.height; ++row) {
-                for (int col = 0; col <= kBlokusBoardSize - orientation.width; ++col) {
-                    const int action_id = orientation_index * kBlokusBoardArea + getPosition(row, col);
-                    if (isPlacementLegal(action_id, turn_)) { actions.emplace_back(action_id, turn_); }
-                }
+            const std::array<bool, kBlokusBoardArea> candidate_anchors = getCandidateAnchors(orientation, contact_points);
+            for (int anchor = 0; anchor < kBlokusBoardArea; ++anchor) {
+                if (!candidate_anchors[anchor]) { continue; }
+                const int action_id = orientation_index * kBlokusBoardArea + anchor;
+                if (isPlacementLegal(action_id, turn_)) { actions.emplace_back(action_id, turn_); }
             }
         }
     }
     if (actions.empty()) { actions.emplace_back(kBlokusPassAction, turn_); }
     return actions;
+}
+
+std::vector<BlokusCell> BlokusEnv::getRequiredContactPoints(Player player) const
+{
+    if (isFirstMove(player)) {
+        const auto [row, col] = startingCorner(player);
+        return {{row, col}};
+    }
+
+    std::array<bool, kBlokusBoardArea> is_contact{};
+    constexpr int diagonals[4][2] = {{1, 1}, {1, -1}, {-1, 1}, {-1, -1}};
+    for (int row = 0; row < kBlokusBoardSize; ++row) {
+        for (int col = 0; col < kBlokusBoardSize; ++col) {
+            if (board_[getPosition(row, col)] != player) { continue; }
+            for (const auto& diagonal : diagonals) {
+                const int contact_row = row + diagonal[0];
+                const int contact_col = col + diagonal[1];
+                if (contact_row < 0 || contact_row >= kBlokusBoardSize ||
+                    contact_col < 0 || contact_col >= kBlokusBoardSize ||
+                    board_[getPosition(contact_row, contact_col)] != Player::kPlayerNone) {
+                    continue;
+                }
+                is_contact[getPosition(contact_row, contact_col)] = true;
+            }
+        }
+    }
+
+    std::vector<BlokusCell> contact_points;
+    contact_points.reserve(kBlokusBoardArea);
+    for (int position = 0; position < kBlokusBoardArea; ++position) {
+        if (is_contact[position]) { contact_points.push_back({position / kBlokusBoardSize, position % kBlokusBoardSize}); }
+    }
+    return contact_points;
+}
+
+std::array<bool, kBlokusBoardArea> BlokusEnv::getCandidateAnchors(const BlokusOrientation& orientation, const std::vector<BlokusCell>& contact_points) const
+{
+    std::array<bool, kBlokusBoardArea> is_candidate{};
+    for (const BlokusCell& contact : contact_points) {
+        for (const BlokusCell& cell : orientation.cells) {
+            const int anchor_row = contact.row - cell.row;
+            const int anchor_col = contact.col - cell.col;
+            if (anchor_row < 0 || anchor_row + orientation.height > kBlokusBoardSize ||
+                anchor_col < 0 || anchor_col + orientation.width > kBlokusBoardSize) {
+                continue;
+            }
+            is_candidate[getPosition(anchor_row, anchor_col)] = true;
+        }
+    }
+    return is_candidate;
 }
 
 bool BlokusEnv::isLegalAction(const BlokusAction& action) const
@@ -250,13 +301,14 @@ bool BlokusEnv::hasPlacement(Player player) const
     const int player_index = playerToIndex(player);
     if (eliminated_[player_index]) { return false; }
     const auto& orientations = getBlokusOrientations();
+    const std::vector<BlokusCell> contact_points = getRequiredContactPoints(player);
     for (int orientation_index = 0; orientation_index < static_cast<int>(orientations.size()); ++orientation_index) {
         const BlokusOrientation& orientation = orientations[orientation_index];
         if (!available_[player_index][orientation.piece]) { continue; }
-        for (int row = 0; row <= kBlokusBoardSize - orientation.height; ++row) {
-            for (int col = 0; col <= kBlokusBoardSize - orientation.width; ++col) {
-                if (isPlacementLegal(orientation_index * kBlokusBoardArea + getPosition(row, col), player)) { return true; }
-            }
+        const std::array<bool, kBlokusBoardArea> candidate_anchors = getCandidateAnchors(orientation, contact_points);
+        for (int anchor = 0; anchor < kBlokusBoardArea; ++anchor) {
+            if (!candidate_anchors[anchor]) { continue; }
+            if (isPlacementLegal(orientation_index * kBlokusBoardArea + anchor, player)) { return true; }
         }
     }
     return false;
