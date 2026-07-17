@@ -1,5 +1,4 @@
 #include "blokus.h"
-#include <cassert>
 #include <cmath>
 #include <numeric>
 #include <random>
@@ -71,7 +70,8 @@ void testOptimizedGeneratorMatchesExhaustiveGenerator()
 
 int main()
 {
-    assert(getBlokusOrientations().size() == kBlokusNumOrientations);
+    require(getBlokusOrientations().size() == kBlokusNumOrientations,
+            "Blokus orientation catalogue size is incorrect");
     int total_cells = 0;
     for (int piece = 0; piece < kBlokusNumPieces; ++piece) {
         for (const auto& orientation : getBlokusOrientations()) {
@@ -81,28 +81,30 @@ int main()
             }
         }
     }
-    assert(total_cells == 89);
+    require(total_cells == 89, "Blokus piece catalogue must contain 89 cells");
 
     BlokusEnv env;
-    assert(env.getFeatures().size() == kBlokusNumInputChannels * kBlokusBoardArea);
-    assert(env.getLegalActions().size() == 58); // every distinct placement covering P1's corner
+    require(env.getFeatures().size() == kBlokusNumInputChannels * kBlokusBoardArea,
+            "Blokus feature size is incorrect");
+    require(env.getLegalActions().size() == 58,
+            "Blokus opening must have 58 distinct placements covering P1's corner");
     require(!env.isLegalAction(BlokusAction(kBlokusPassAction, env.getTurn())),
             "PASS must be illegal while the current player has a placement");
     const int p1_monomino = findAction(env, 0, 0, 0);
-    assert(p1_monomino >= 0);
-    assert(env.act(BlokusAction(p1_monomino, Player::kPlayer1)));
-    assert(env.getPlayerAt(0, 0) == Player::kPlayer1);
-    assert(!env.isPieceAvailable(Player::kPlayer1, 0));
+    require(p1_monomino >= 0, "P1 monomino opening is missing");
+    require(env.act(BlokusAction(p1_monomino, Player::kPlayer1)), "P1 monomino opening is illegal");
+    require(env.getPlayerAt(0, 0) == Player::kPlayer1, "P1 opening does not cover its corner");
+    require(!env.isPieceAvailable(Player::kPlayer1, 0), "placed piece remains available");
 
     const int p2_monomino = findAction(env, 0, 0, 19);
-    assert(p2_monomino >= 0);
-    assert(env.act(BlokusAction(p2_monomino, Player::kPlayer2)));
+    require(p2_monomino >= 0, "P2 monomino opening is missing");
+    require(env.act(BlokusAction(p2_monomino, Player::kPlayer2)), "P2 monomino opening is illegal");
     const int p3_monomino = findAction(env, 0, 19, 19);
-    assert(p3_monomino >= 0);
-    assert(env.act(BlokusAction(p3_monomino, Player::kPlayer3)));
+    require(p3_monomino >= 0, "P3 monomino opening is missing");
+    require(env.act(BlokusAction(p3_monomino, Player::kPlayer3)), "P3 monomino opening is illegal");
     const int p4_monomino = findAction(env, 0, 19, 0);
-    assert(p4_monomino >= 0);
-    assert(env.act(BlokusAction(p4_monomino, Player::kPlayer4)));
+    require(p4_monomino >= 0, "P4 monomino opening is missing");
+    require(env.act(BlokusAction(p4_monomino, Player::kPlayer4)), "P4 monomino opening is illegal");
 
     // P1 must touch its own piece diagonally, never edge-to-edge.
     int horizontal_domino_orientation = -1;
@@ -118,39 +120,49 @@ int main()
     require(!env.isLegalAction(BlokusAction(edge_touching_domino, Player::kPlayer1)),
             "same-color edge contact must be illegal");
     const int legal_domino = findAction(env, 1, 1, 1);
-    assert(legal_domino >= 0);
-    assert(env.act(BlokusAction(legal_domino, Player::kPlayer1)));
+    require(legal_domino >= 0, "same-color diagonal domino placement is missing");
+    require(env.act(BlokusAction(legal_domino, Player::kPlayer1)),
+            "same-color diagonal contact must be legal");
 
     BlokusAction pass({"b", "PASS"});
-    assert(pass.getActionID() == kBlokusPassAction);
-    assert(pass.toConsoleString() == "PASS");
+    require(pass.getActionID() == kBlokusPassAction, "PASS action parsing failed");
+    require(pass.toConsoleString() == "PASS", "PASS console formatting failed");
     const auto pass_features = env.getActionFeatures(pass);
-    assert(std::accumulate(pass_features.begin(), pass_features.begin() + kBlokusBoardArea, 0.0f) == 0.0f);
-    assert(std::accumulate(pass_features.begin() + kBlokusBoardArea, pass_features.end(), 0.0f) == kBlokusBoardArea);
+    require(std::accumulate(pass_features.begin(), pass_features.begin() + kBlokusBoardArea, 0.0f) == 0.0f,
+            "PASS must not mark placement cells");
+    require(std::accumulate(pass_features.begin() + kBlokusBoardArea, pass_features.end(), 0.0f) == kBlokusBoardArea,
+            "PASS action feature plane is incorrect");
 
     BlokusEnv initial_score;
     const PlayerValues values = initial_score.getEvalScores();
-    assert(std::fabs(values[0] + values[1] + values[2] + values[3]) < 1e-6f);
-    assert(initial_score.getPlayerScore(Player::kPlayer1) == -89);
+    require(std::fabs(values[0] + values[1] + values[2] + values[3]) < 1e-6f,
+            "initial Blokus utilities are not zero-sum");
+    require(initial_score.getPlayerScore(Player::kPlayer1) == -89,
+            "initial Blokus score must be -89");
 
     BlokusEnv complete_game;
     int plies = 0;
     while (!complete_game.isTerminal()) {
         const std::vector<BlokusAction> legal_actions = complete_game.getLegalActions();
-        assert(!legal_actions.empty());
-        assert(complete_game.act(legal_actions.front()));
-        assert(++plies <= kBlokusNumPlayer * (kBlokusNumPieces + 1));
+        require(!legal_actions.empty(), "non-terminal Blokus environment has no legal action");
+        require(complete_game.act(legal_actions.front()), "generated complete-game action is illegal");
+        ++plies;
+        require(plies <= kBlokusNumPlayer * (kBlokusNumPieces + 1),
+                "Blokus game exceeded the placement and PASS limit");
     }
-    assert(complete_game.getLegalActions().empty());
+    require(complete_game.getLegalActions().empty(), "terminal Blokus environment has legal actions");
     const PlayerValues final_values = complete_game.getEvalScores();
-    assert(std::fabs(final_values[0] + final_values[1] + final_values[2] + final_values[3]) < 1e-5f);
+    require(std::fabs(final_values[0] + final_values[1] + final_values[2] + final_values[3]) < 1e-5f,
+            "final Blokus utilities are not zero-sum");
 
     BlokusEnvLoader loader;
     loader.loadFromEnvironment(env);
     BlokusEnvLoader loaded;
-    assert(loaded.loadFromString(loader.toString()));
-    assert(loaded.getActionPairs().size() == env.getActionHistory().size());
-    assert(loaded.getValue(0).size() == kBlokusNumPlayer);
+    require(loaded.loadFromString(loader.toString()), "Blokus record round-trip failed");
+    require(loaded.getActionPairs().size() == env.getActionHistory().size(),
+            "Blokus record action count changed after round-trip");
+    require(loaded.getValue(0).size() == kBlokusNumPlayer,
+            "Blokus record does not preserve the four-player value vector");
 
     // Candidate generation is only an optimization.  On complete random games,
     // it must preserve the exact exhaustive action set and ordering at every ply.
