@@ -357,17 +357,12 @@ PlayerValues BlokusEnv::getEvalScores(bool is_resign /* = false */) const
         for (int player = 0; player < kBlokusNumPlayer; ++player) { values[player] = player == resigned ? -1.0f : 1.0f / 3.0f; }
         return values;
     }
-    std::array<float, kBlokusNumPlayer> scores;
-    float total = 0.0f;
+
+    constexpr float kMinScore = -89.0f;
+    constexpr float kMaxScore = 20.0f;
     for (int player = 0; player < kBlokusNumPlayer; ++player) {
-        scores[player] = static_cast<float>(getPlayerScore(indexToPlayer(player)));
-        total += scores[player];
-    }
-    // Official Blokus scores range from -89 to +20.  Centering each score
-    // against the other three players yields a bounded, zero-sum utility.
-    for (int player = 0; player < kBlokusNumPlayer; ++player) {
-        const float opponent_mean = (total - scores[player]) / 3.0f;
-        values[player] = (scores[player] - opponent_mean) / 109.0f;
+        const float score = static_cast<float>(getPlayerScore(indexToPlayer(player)));
+        values[player] = 2.0f * (score - kMinScore) / (kMaxScore - kMinScore) - 1.0f;
     }
     return values;
 }

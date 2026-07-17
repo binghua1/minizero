@@ -2,13 +2,13 @@
 
 MiniZero implements the classic four-player Blokus rules on a 20x20 board. Each player owns the complete set of 21 free polyominoes (89 unit squares). The first piece covers that player's starting corner; later pieces must touch the player's existing pieces diagonally and must not touch them orthogonally. Opponents' pieces may touch in either way. A player with no legal placement passes once and is skipped for the rest of the game. The game ends after all four players have been eliminated.
 
-The implementation follows Mattel's classic scoring: every unplayed unit square is -1; playing all pieces earns +15; playing the monomino last raises that score to +20. The neural target is a bounded zero-sum utility rather than a winner-only label:
+The implementation follows Mattel's classic scoring: every unplayed unit square is -1; playing all pieces earns +15; playing the monomino last raises that score to +20. Each player's official score is independently normalized from `[-89, +20]` to the value head's `[-1, 1]` range:
 
 ```text
-u_i = (score_i - mean(score of the other three players)) / 109
+v_i = 2 * (score_i + 89) / 109 - 1
 ```
 
-This preserves score margins and fits the existing `[-1, 1]` value head. Game records contain all four utilities in the `RE` property.
+This preserves absolute score margins without forcing the four-player returns to be zero-sum. Game records contain all four normalized scores in the `RE` property.
 
 ## State and action representation
 
@@ -37,7 +37,7 @@ cmake --build build/blokus-test -j
 ctest --test-dir build/blokus-test --output-on-failure
 ```
 
-The focused test checks the 21-piece/91-orientation catalogue, all 89 squares, the 58 legal opening placements, all four starting corners, diagonal versus edge contact, action features, official initial score, zero-sum utility, and record round-tripping.
+The focused test checks the 21-piece/91-orientation catalogue, all 89 squares, the 58 legal opening placements, all four starting corners, diagonal versus edge contact, action features, official initial score, normalized score returns, and record round-tripping.
 
 ## AlphaZero baseline
 

@@ -66,6 +66,17 @@ void testOptimizedGeneratorMatchesExhaustiveGenerator()
     }
 }
 
+void requireNormalizedScoreValues(const BlokusEnv& env)
+{
+    const PlayerValues values = env.getEvalScores();
+    for (int player = 0; player < kBlokusNumPlayer; ++player) {
+        const float score = static_cast<float>(env.getPlayerScore(indexToPlayer(player)));
+        const float expected = 2.0f * (score + 89.0f) / 109.0f - 1.0f;
+        require(std::fabs(values[player] - expected) < 1e-6f,
+                "Blokus value is not the normalized official score");
+    }
+}
+
 } // namespace
 
 int main()
@@ -134,11 +145,9 @@ int main()
             "PASS action feature plane is incorrect");
 
     BlokusEnv initial_score;
-    const PlayerValues values = initial_score.getEvalScores();
-    require(std::fabs(values[0] + values[1] + values[2] + values[3]) < 1e-6f,
-            "initial Blokus utilities are not zero-sum");
     require(initial_score.getPlayerScore(Player::kPlayer1) == -89,
             "initial Blokus score must be -89");
+    requireNormalizedScoreValues(initial_score);
 
     BlokusEnv complete_game;
     int plies = 0;
@@ -151,9 +160,7 @@ int main()
                 "Blokus game exceeded the placement and PASS limit");
     }
     require(complete_game.getLegalActions().empty(), "terminal Blokus environment has legal actions");
-    const PlayerValues final_values = complete_game.getEvalScores();
-    require(std::fabs(final_values[0] + final_values[1] + final_values[2] + final_values[3]) < 1e-5f,
-            "final Blokus utilities are not zero-sum");
+    requireNormalizedScoreValues(complete_game);
 
     BlokusEnvLoader loader;
     loader.loadFromEnvironment(env);
