@@ -17,6 +17,11 @@ typedef minizero::env::atari::AtariEnvLoader EnvironmentLoader;
 typedef minizero::env::blokus::BlokusAction Action;
 typedef minizero::env::blokus::BlokusEnv Environment;
 typedef minizero::env::blokus::BlokusEnvLoader EnvironmentLoader;
+#elif BLOKUS10
+#include "blokus10.h"
+typedef minizero::env::blokus10::Blokus10Action Action;
+typedef minizero::env::blokus10::Blokus10Env Environment;
+typedef minizero::env::blokus10::Blokus10EnvLoader EnvironmentLoader;
 #elif BREAKTHROUGH
 #include "breakthrough.h"
 typedef minizero::env::breakthrough::BreakthroughAction Action;
@@ -52,6 +57,11 @@ typedef minizero::env::dotsandboxes::DotsAndBoxesEnvLoader EnvironmentLoader;
 typedef minizero::env::go::GoAction Action;
 typedef minizero::env::go::GoEnv Environment;
 typedef minizero::env::go::GoEnvLoader EnvironmentLoader;
+#elif GO3
+#include "go3.h"
+typedef minizero::env::go3::Go3Action Action;
+typedef minizero::env::go3::Go3Env Environment;
+typedef minizero::env::go3::Go3EnvLoader EnvironmentLoader;
 #elif GOMOKU
 #include "gomoku.h"
 typedef minizero::env::gomoku::GomokuAction Action;

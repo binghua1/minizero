@@ -20,7 +20,7 @@ from pathlib import Path
 
 
 PLAYER_CODES = ("b", "w", "r", "g", "y", "p")
-DEFAULT_MAX_MOVES = {"tictacmo": 15, "connect3x3": 42, "blokus": 400}
+DEFAULT_MAX_MOVES = {"tictacmo": 15, "connect3x3": 42, "go3": 400, "blokus": 400, "blokus10": 160}
 DEFAULT_EVAL_OVERRIDES = {
     "actor_use_gumbel": "false",
     "actor_use_gumbel_noise": "false",
@@ -39,6 +39,14 @@ MULTIPLAYER_SELF_EVAL_OVERRIDES = {
     "zero_disable_resign_ratio": "1",
     "zero_actor_intermediate_sequence_length": "0",
 }
+
+
+def default_terminal_passes(game):
+    if game in ("blokus", "blokus10"):
+        return 4
+    if game == "go3":
+        return 3
+    return 1
 
 
 @dataclass(frozen=True)
@@ -813,7 +821,7 @@ def create_auto_manifest(args, repo_root, models, configs, executable):
         "seat_mode": "all_permutations",
         "games_per_seating": args.games_per_seating,
         "max_moves": args.max_moves if args.max_moves is not None else DEFAULT_MAX_MOVES.get(args.game, 2048),
-        "terminal_passes": 4 if args.game == "blokus" else 1,
+        "terminal_passes": default_terminal_passes(args.game),
         "command_timeout": args.command_timeout,
         "seed": args.seed,
     }
@@ -1060,7 +1068,7 @@ def auto_main(argv):
     args = parser.parse_args(argv)
     args.game = args.game.lower()
     if args.num_players is None:
-        args.num_players = 4 if args.game == "blokus" else 3
+        args.num_players = 4 if args.game in ("blokus", "blokus10") else 3
 
     if not 2 <= args.num_players <= len(PLAYER_CODES):
         parser.error(f"--num-players must be between 2 and {len(PLAYER_CODES)}")
@@ -1229,7 +1237,7 @@ def create_checkpoint_manifest(args, repo_root, executable, config, older, newer
         "seat_mode": "all_permutations",
         "num_games": args.games,
         "max_moves": args.max_moves if args.max_moves is not None else DEFAULT_MAX_MOVES.get(args.game, 2048),
-        "terminal_passes": 4 if args.game == "blokus" else 1,
+        "terminal_passes": default_terminal_passes(args.game),
         "command_timeout": args.command_timeout,
         "seed": args.seed,
         "self_eval": {
@@ -1324,7 +1332,7 @@ def self_eval_main(argv):
     args = parser.parse_args(argv)
     args.game = args.game.lower()
     if args.num_players is None:
-        args.num_players = 4 if args.game == "blokus" else 3
+        args.num_players = 4 if args.game in ("blokus", "blokus10") else 3
 
     positive = (args.interval, args.games, args.num_players, args.command_timeout,
                 args.omp_num_threads, args.num_threads)

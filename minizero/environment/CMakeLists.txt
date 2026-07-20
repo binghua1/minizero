@@ -8,6 +8,7 @@ target_include_directories(
     amazons
     atari
     blokus
+    blokus10
     breakthrough
     clobber
     conhex
@@ -15,6 +16,7 @@ target_include_directories(
     connect6
     dotsandboxes
     go
+    go3
     gomoku
     havannah
     hex
