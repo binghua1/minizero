@@ -574,7 +574,124 @@ def summarize(results, agent_names, players, output_dir):
         {"game_id": record["game_id"], "seating": "/".join(record["seating"]), "error": record["error"]}
         for record in results if record.get("error")
     ])
+    write_arena_plots(output_dir, agent_rows, seat_rows)
     return agent_rows, len(valid), len(results) - len(valid)
+
+
+def write_arena_plots(output_dir, agent_rows, seat_rows):
+    os.environ.setdefault("MPLCONFIGDIR", str(output_dir / ".matplotlib"))
+    os.environ.setdefault("XDG_CACHE_HOME", str(output_dir / ".cache"))
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        (output_dir / "plot_warning.txt").write_text("matplotlib unavailable; summary PNG files were not generated\n")
+        return
+
+    if agent_rows:
+        names = [row["agent"] for row in agent_rows]
+        win_rates = [float(row["win_rate"]) for row in agent_rows]
+        avg_returns = [float(row["avg_return"]) for row in agent_rows]
+        figure, axes = plt.subplots(1, 2, figsize=(max(8, 1.2 * len(names)), 4))
+        axes[0].bar(names, win_rates)
+        axes[0].set_ylabel("win rate")
+        axes[0].set_ylim(0, max(1.0, max(win_rates) * 1.15 if win_rates else 1.0))
+        axes[0].tick_params(axis="x", rotation=30)
+        axes[1].bar(names, avg_returns)
+        axes[1].axhline(0.0, color="black", linewidth=0.8)
+        axes[1].set_ylabel("average return")
+        axes[1].tick_params(axis="x", rotation=30)
+        figure.tight_layout()
+        figure.savefig(output_dir / "agent_summary.png")
+        plt.close(figure)
+
+    if seat_rows:
+        agents = list(dict.fromkeys(row["agent"] for row in seat_rows))
+        seats = list(dict.fromkeys(row["seat"] for row in seat_rows))
+        values = {(row["agent"], row["seat"]): float(row["avg_return"]) for row in seat_rows}
+        width = 0.8 / max(1, len(seats))
+        x_positions = list(range(len(agents)))
+        figure, axis = plt.subplots(figsize=(max(8, 1.2 * len(agents)), 4))
+        for offset, seat in enumerate(seats):
+            shift = (offset - (len(seats) - 1) / 2) * width
+            axis.bar(
+                [x + shift for x in x_positions],
+                [values.get((agent, seat), 0.0) for agent in agents],
+                width=width,
+                label=seat,
+            )
+        axis.axhline(0.0, color="black", linewidth=0.8)
+        axis.set_xticks(x_positions)
+        axis.set_xticklabels(agents, rotation=30)
+        axis.set_ylabel("average return by seat")
+        axis.legend(title="seat")
+        figure.tight_layout()
+        figure.savefig(output_dir / "seat_summary.png")
+        plt.close(figure)
+
+    write_mcts_sweep_outputs(output_dir, agent_rows, plt)
+
+
+def write_mcts_sweep_outputs(output_dir, agent_rows, plt):
+    pattern = re.compile(r"^alg_uct_(maxn|paranoid)_s(\d+)$")
+    rows = []
+    model_rows = []
+    for row in agent_rows:
+        match = pattern.fullmatch(row["agent"])
+        if match:
+            rows.append({
+                "search": match.group(1),
+                "simulations": int(match.group(2)),
+                "agent": row["agent"],
+                "games": row["games"],
+                "wins": row["wins"],
+                "draws": row["draws"],
+                "losses": row["losses"],
+                "win_rate": row["win_rate"],
+                "draw_rate": row["draw_rate"],
+                "avg_return": row["avg_return"],
+            })
+        elif not row["agent"].startswith("alg_"):
+            model_rows.append(row)
+    if not rows:
+        return
+
+    rows.sort(key=lambda item: (item["search"], item["simulations"]))
+    write_csv(
+        output_dir / "mcts_sweep_summary.csv",
+        ["search", "simulations", "agent", "games", "wins", "draws", "losses", "win_rate", "draw_rate", "avg_return"],
+        rows,
+    )
+
+    figure, axes = plt.subplots(1, 2, figsize=(10, 4))
+    styles = {
+        "maxn": {"label": "UCT MaxN", "marker": "o"},
+        "paranoid": {"label": "UCT Paranoid", "marker": "s"},
+    }
+    for search, style in styles.items():
+        series = [row for row in rows if row["search"] == search]
+        if not series:
+            continue
+        x = [row["simulations"] for row in series]
+        axes[0].plot(x, [float(row["win_rate"]) for row in series], marker=style["marker"], label=style["label"])
+        axes[1].plot(x, [float(row["avg_return"]) for row in series], marker=style["marker"], label=style["label"])
+
+    if model_rows:
+        model = model_rows[0]
+        axes[0].axhline(float(model["win_rate"]), linestyle="--", color="black", linewidth=1, label=f"{model['agent']} reference")
+        axes[1].axhline(float(model["avg_return"]), linestyle="--", color="black", linewidth=1, label=f"{model['agent']} reference")
+
+    for axis in axes:
+        axis.set_xscale("log", base=2)
+        axis.set_xlabel("pure MCTS simulations per move")
+        axis.grid(True, which="both", linestyle=":", linewidth=0.6)
+        axis.legend()
+    axes[0].set_ylabel("win rate")
+    axes[0].set_ylim(0, max(1.0, axes[0].get_ylim()[1]))
+    axes[1].axhline(0.0, color="gray", linewidth=0.8)
+    axes[1].set_ylabel("average centered return")
+    figure.tight_layout()
+    figure.savefig(output_dir / "mcts_sweep.png")
+    plt.close(figure)
 
 
 def prepare_output(output_dir, resume, overwrite):
@@ -700,6 +817,215 @@ def create_auto_manifest(args, repo_root, models, configs, executable):
         "command_timeout": args.command_timeout,
         "seed": args.seed,
     }
+
+
+def create_model_console_agent(name, model, config, executable, repo_root, search_type, args):
+    overrides = dict(DEFAULT_EVAL_OVERRIDES)
+    if args.noise:
+        overrides["actor_use_dirichlet_noise"] = "true"
+    if args.num_simulations is not None:
+        overrides["actor_num_simulation"] = str(args.num_simulations)
+    overrides.update(parse_conf_overrides(getattr(args, "conf_str", "")))
+    overrides.update({
+        "nn_file_name": str(model),
+        "actor_multiplayer_search_type": search_type,
+        "program_seed": "{seed}",
+        "program_auto_seed": "false",
+    })
+    conf_str = ":".join(f"{key}={value}" for key, value in overrides.items())
+    return {
+        "name": name,
+        "cwd": str(repo_root),
+        "env": {"OMP_NUM_THREADS": str(args.omp_num_threads)},
+        "command": [
+            str(executable), "-mode", "console",
+            "-conf_file", str(config),
+            "-conf_str", conf_str,
+        ],
+    }
+
+
+def create_blokus_baseline_agent(policy, repo_root, args, simulations=None):
+    name = f"alg_{policy}" if simulations is None else f"alg_{policy}_s{simulations}"
+    command = [
+        sys.executable,
+        str(repo_root / "tools" / "blokus-baseline-agent.py"),
+        "--policy", policy,
+        "--seed", "{seed}",
+    ]
+    if policy == "rollout":
+        command.extend([
+            "--rollouts", str(args.rollouts),
+            "--candidate-limit", str(args.candidate_limit),
+            "--playout-policy", args.playout_policy,
+            "--max-plies", str(args.rollout_max_plies),
+        ])
+    if policy in ("uct_maxn", "uct_paranoid"):
+        command.extend([
+            "--mcts-simulations", str(simulations if simulations is not None else args.mcts_simulations[0]),
+            "--mcts-cpuct", str(args.mcts_cpuct),
+            "--mcts-candidate-limit", str(args.mcts_candidate_limit),
+            "--mcts-leaf-eval", args.mcts_leaf_eval,
+            "--mcts-playout-policy", args.mcts_playout_policy,
+            "--mcts-max-plies", str(args.mcts_max_plies),
+        ])
+    return {
+        "name": name,
+        "cwd": str(repo_root),
+        "command": command,
+    }
+
+
+def create_pairwise_lineups(model_name, baseline_names, num_players):
+    lineups = []
+    for baseline in baseline_names:
+        lineups.extend(create_balanced_lineups([model_name, baseline], num_players))
+    return lineups
+
+
+def create_blokus_baseline_manifest(args, repo_root, executable, config, model):
+    model_name = args.model_name
+    baseline_specs = []
+    for policy in args.baselines:
+        if policy in ("uct_maxn", "uct_paranoid"):
+            baseline_specs.extend((policy, simulations) for simulations in args.mcts_simulations)
+        else:
+            baseline_specs.append((policy, None))
+    baseline_names = [
+        f"alg_{policy}" if simulations is None else f"alg_{policy}_s{simulations}"
+        for policy, simulations in baseline_specs
+    ]
+    return {
+        "game": "blokus",
+        "players": list(PLAYER_CODES[:args.num_players]),
+        "agents": [
+            create_model_console_agent(model_name, model, config, executable, repo_root, args.search_type, args),
+            *[create_blokus_baseline_agent(policy, repo_root, args, simulations) for policy, simulations in baseline_specs],
+        ],
+        # Pairwise lineups avoid an unreadable random/greedy/rollout/model
+        # four-way soup.  Each baseline gets the same seat-balanced mixture:
+        # 1 model vs 3 baseline, 2 vs 2, and 3 model vs 1 baseline, with all
+        # unique seat permutations.
+        "lineups": create_pairwise_lineups(model_name, baseline_names, args.num_players),
+        "seat_mode": "all_permutations",
+        "num_games": args.games,
+        "max_moves": args.max_moves if args.max_moves is not None else DEFAULT_MAX_MOVES["blokus"],
+        "terminal_passes": 4,
+        "command_timeout": args.command_timeout,
+        "seed": args.seed,
+    }
+
+
+def blokus_baseline_main(argv):
+    parser = argparse.ArgumentParser(
+        prog="multiplayer-eval.py blokus-baseline",
+        description="Compare a Blokus neural model against pure algorithmic baselines.",
+    )
+    parser.add_argument("training_dir", help="training folder containing model/ and a config")
+    parser.add_argument("--model", help="model path, file name, or iteration number (default: latest iteration)")
+    parser.add_argument("--model-name", default="model")
+    parser.add_argument("--conf-file", help="evaluation config (default: newest *.cfg in the training folder)")
+    parser.add_argument("--executable", help="engine executable (default: build/blokus/minizero_blokus)")
+    parser.add_argument("--output", help="output directory")
+    parser.add_argument("--search-type", choices=("maxn", "paranoid"), default="maxn")
+    parser.add_argument("--baselines", nargs="+", default=["random", "greedy", "greedy_mobility", "rollout"],
+                        choices=("random", "greedy", "greedy_mobility", "rollout", "uct_maxn", "uct_paranoid"))
+    parser.add_argument("--num-players", type=int, default=4)
+    parser.add_argument("--num-simulations", type=int, help="override actor_num_simulation for the model agent")
+    parser.add_argument("--noise", action="store_true", help="enable Dirichlet noise for the model agent")
+    parser.add_argument("-conf_str", "--conf-str", dest="conf_str", default="")
+    parser.add_argument("--games", type=int, default=120, help="total games across all generated seatings")
+    parser.add_argument("--max-moves", type=int)
+    parser.add_argument("--command-timeout", type=float, default=300)
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--omp-num-threads", type=int, default=2)
+    parser.add_argument("--rollouts", type=int, default=64)
+    parser.add_argument("--candidate-limit", type=int, default=32)
+    parser.add_argument("--playout-policy", choices=("random", "greedy", "greedy_mobility"), default="random")
+    parser.add_argument("--rollout-max-plies", type=int, default=400)
+    parser.add_argument("--mcts-simulations", type=int, nargs="+", default=[50, 100, 200, 400, 800, 1600],
+                        help="simulation sweep for uct_maxn/uct_paranoid baselines")
+    parser.add_argument("--mcts-cpuct", type=float, default=1.0)
+    parser.add_argument("--mcts-candidate-limit", type=int, default=64,
+                        help="legal action candidates considered at each pure-MCTS node")
+    parser.add_argument("--mcts-leaf-eval", choices=("zero", "rollout"), default="zero",
+                        help="zero matches a DumbNet-style uninformed MCTS; rollout uses terminal playouts at leaves")
+    parser.add_argument("--mcts-playout-policy", choices=("random", "greedy", "greedy_mobility"), default="random")
+    parser.add_argument("--mcts-max-plies", type=int, default=400)
+    parser.add_argument("-g", "--gpu", help="GPU list, for example 0123 or 0,1,2,3")
+    parser.add_argument("--num_threads", "--num-threads", "--threads", dest="num_threads", type=int, default=1)
+    parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument("--dry-run", action="store_true", help="only generate arena.json")
+    args = parser.parse_args(argv)
+
+    if args.num_players != 4:
+        parser.error("Blokus baseline mode currently expects --num-players 4")
+    if len(set(args.baselines)) != len(args.baselines):
+        parser.error("--baselines must not contain duplicates")
+    positive = (
+        args.games, args.command_timeout, args.omp_num_threads, args.num_threads,
+        args.rollouts, args.candidate_limit, args.rollout_max_plies,
+        args.mcts_candidate_limit, args.mcts_max_plies,
+    )
+    if (any(value <= 0 for value in positive) or any(value <= 0 for value in args.mcts_simulations) or
+            args.mcts_cpuct < 0 or (args.num_simulations is not None and args.num_simulations <= 0)):
+        parser.error("game, timeout, thread, simulation, and rollout counts must be positive")
+
+    repo_root = Path(__file__).resolve().parents[1]
+    training_dir = Path(args.training_dir).resolve()
+    if not training_dir.is_dir():
+        parser.error(f"training directory not found: {training_dir}")
+    model = resolve_auto_model(training_dir, args.model)
+    config = resolve_auto_config(training_dir, args.conf_file)
+    executable = Path(args.executable).resolve() if args.executable else repo_root / "build" / "blokus" / "minizero_blokus"
+    if not executable.is_file():
+        parser.error(f"engine executable not found: {executable}; build it before evaluation")
+    baseline_label = "_".join(
+        f"{policy}_{'-'.join(map(str, args.mcts_simulations))}" if policy in ("uct_maxn", "uct_paranoid") else policy
+        for policy in args.baselines
+    )
+    simulation_label = f"_n{args.num_simulations}" if args.num_simulations is not None else ""
+    noise_label = "_noise" if args.noise else ""
+    output_dir = (
+        Path(args.output).resolve()
+        if args.output
+        else training_dir / "evaluation" / f"{model.stem}_{args.search_type}_vs_{baseline_label}{simulation_label}{noise_label}"
+    )
+    output_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = output_dir / "arena.json"
+    manifest = create_blokus_baseline_manifest(args, repo_root, executable.resolve(), config, model)
+    results_path = output_dir / "games.jsonl"
+    if results_path.exists() and not (args.resume or args.overwrite or args.dry_run):
+        raise FileExistsError(f"{results_path} exists; use --resume or --overwrite")
+    if args.resume and manifest_path.exists():
+        with manifest_path.open() as stream:
+            previous_manifest = json.load(stream)
+        if previous_manifest != manifest:
+            raise ValueError(f"generated settings differ from the existing resume manifest: {manifest_path}")
+    with manifest_path.open("w") as stream:
+        json.dump(manifest, stream, indent=2)
+        stream.write("\n")
+    print(f"generated arena manifest: {manifest_path}", flush=True)
+    print(f"model: {model}", flush=True)
+    print(f"config: {config}", flush=True)
+    print(f"baselines: {', '.join(args.baselines)}", flush=True)
+    if any(policy in ("uct_maxn", "uct_paranoid") for policy in args.baselines):
+        print(f"MCTS simulation sweep: {', '.join(map(str, args.mcts_simulations))}", flush=True)
+
+    if args.dry_run:
+        return
+    run(argparse.Namespace(
+        manifest=str(manifest_path),
+        output=str(output_dir),
+        gpu=args.gpu,
+        num_threads=args.num_threads,
+        games_per_seating=None,
+        num_games=None,
+        max_moves=None,
+        resume=args.resume,
+        overwrite=args.overwrite,
+    ))
 
 
 def auto_main(argv):
@@ -946,6 +1272,8 @@ def updated_elo(opponent_elo, score):
 
 
 def write_self_eval_plot(path, ratings):
+    os.environ.setdefault("MPLCONFIGDIR", str(path.parent / ".matplotlib"))
+    os.environ.setdefault("XDG_CACHE_HOME", str(path.parent / ".cache"))
     try:
         import matplotlib.pyplot as plt
     except ImportError:
@@ -1184,6 +1512,9 @@ def run(args):
 def main():
     if len(sys.argv) > 1 and sys.argv[1] == "auto":
         auto_main(sys.argv[2:])
+        return
+    if len(sys.argv) > 1 and sys.argv[1] == "blokus-baseline":
+        blokus_baseline_main(sys.argv[2:])
         return
     if len(sys.argv) > 1 and sys.argv[1] == "self-eval":
         self_eval_main(sys.argv[2:])

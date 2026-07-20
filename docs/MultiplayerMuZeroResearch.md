@@ -30,7 +30,7 @@ Blokus is a useful hard benchmark: it is deterministic and perfect-information, 
 
 ## Required baselines and ablations
 
-- random, greedy largest-piece, and rollout MCTS;
+- random, greedy largest-piece, flat rollout, and uninformed/vanilla MCTS;
 - multiplayer AlphaZero with MaxN and Paranoid;
 - vector MuZero with MaxN and Paranoid;
 - proposed population-conditioned/equilibrium-aware MuZero;
@@ -40,6 +40,70 @@ Blokus is a useful hard benchmark: it is deterministic and perfect-information, 
 - with and without player permutation equivariance and counterfactual consistency.
 
 Report environment steps, model inferences, simulations, wall-clock time, GPU hours, and parameter count. Match inference budgets rather than comparing only equal simulation counts.
+
+## Pure algorithmic Blokus baselines in this repo
+
+`tools/blokus-baseline-agent.py` is a model-free Blokus console engine.  It uses the
+same action id catalogue as `minizero/environment/blokus`: 91 piece orientations,
+400 board anchors, and `PASS=36400`.  It can therefore be seated directly against
+MiniZero neural console engines by `tools/multiplayer-eval.py`.
+
+Implemented policies:
+
+- `random`: uniformly sample a legal action.
+- `greedy`: play the largest legal remaining piece.
+- `greedy_mobility`: prefer large pieces, then more future diagonal contact points.
+- `rollout`: a flat rollout baseline.  It evaluates top legal candidate moves by
+  random/greedy playouts using only game rules and final centered Blokus utilities.
+  This is not the same as the `UninformedMCTSPlayer` baseline in Petosa and Balch's
+  Multiplayer AlphaZero code, which runs tree-search simulations with a uniform-prior,
+  zero-value `DumbNet`.
+- `uct_maxn`: pure UCT-style tree search with no neural network.  At each node the
+  acting player selects by its own backed-up centered return plus UCB exploration.
+  The default leaf evaluator is `zero`, matching a DumbNet-style uninformed MCTS.
+- `uct_paranoid`: pure UCT-style tree search with no neural network.  The root player
+  maximizes its own backed-up return; non-root players are treated as a coalition
+  minimizing the root player's return.  The default leaf evaluator is also `zero`.
+
+Run model-versus-algorithm baselines:
+
+```bash
+MODEL=55500 GAMES_PER_SEATING=1 GPU=0123 \
+  scripts/run-blokus-uct-sweep.sh blokus_maxn_smoke_01
+```
+
+The script calls `tools/multiplayer-eval.py blokus-baseline` and sweeps:
+
+- model search: `SEARCH_TYPE=maxn` by default, override with `SEARCH_TYPE=paranoid`;
+- model simulations: `MODEL_SIMS=50` by default;
+- baselines: `BASELINES="random greedy greedy_mobility rollout uct_maxn uct_paranoid"` by default;
+- flat rollout playouts: `ROLLOUTS=64` by default;
+- pure-MCTS simulations: `MCTS_SIMS="50 100 200 400"` by default;
+- pure-MCTS leaf evaluation: `MCTS_LEAF_EVAL=zero` by default, matching a
+  DumbNet-style uninformed MCTS rather than rollout-to-terminal evaluation;
+- pure-MCTS branching cap: `MCTS_CANDIDATE_LIMIT=64` by default.
+
+The generated arena is pairwise seat-balanced: for each baseline it runs model
+versus that baseline in 1-vs-3, 2-vs-2, and 3-vs-1 lineups with all unique seat
+permutations.  Each `uct_*` simulation count becomes a distinct agent name such
+as `alg_uct_maxn_s50` and `alg_uct_paranoid_s400`.  Results are written under
+`TRAINING_DIR/evaluation/WEIGHT_SEARCH_vs_BASELINES.../` unless `OUTPUT=...` is set:
+
+- `games.jsonl`: one record per game, including seating, moves, returns, and errors.
+- `agent_summary.csv`: win rate and average centered return by agent.
+- `seat_summary.csv`: the same metrics split by Blokus seat.
+- `seating_summary.csv`: per-lineup/per-seating diagnostics.
+- `agent_summary.png`: win rate and average return bar charts.
+- `seat_summary.png`: per-seat average return chart.
+- `mcts_sweep_summary.csv`: `uct_maxn`/`uct_paranoid` metrics by simulation count.
+- `mcts_sweep.png`: paper-style sweep plot with simulations on a log-scale x-axis
+  and win rate / average centered return on y-axes.
+
+With the default script settings there are 12 expanded baseline agents:
+4 non-MCTS baselines plus `2 * 4 = 8` UCT baselines.  Each pairwise
+model-vs-baseline comparison has 14 unique seatings, so one game per seating
+requires `12 * 14 = 168` games.  Use multiples of 168 for cleaner balance, for
+example `GAMES_PER_SEATING=1` -> 168 games, `GAMES_PER_SEATING=5` -> 840 games.
 
 ## Evaluation
 
