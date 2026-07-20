@@ -29,6 +29,7 @@ class MinizeroDadaLoader:
         if py.get_nn_type_name() == "alphazero":
             self.action_features = None
             self.policy = np.zeros(py.get_batch_size() * py.get_nn_action_size(), dtype=np.float32)
+            self.reference_policy = np.zeros(py.get_batch_size() * py.get_nn_action_size(), dtype=np.float32)
             self.value = np.zeros(py.get_batch_size() * self.value_output_size, dtype=np.float32)
             self.reward = None
         else:
@@ -37,6 +38,7 @@ class MinizeroDadaLoader:
             self.policy = np.zeros(py.get_batch_size() * (py.get_muzero_unrolling_step() + 1) * py.get_nn_action_size(), dtype=np.float32)
             self.value = np.zeros(py.get_batch_size() * (py.get_muzero_unrolling_step() + 1) * py.get_nn_discrete_value_size(), dtype=np.float32)
             self.reward = np.zeros(py.get_batch_size() * py.get_muzero_unrolling_step() * py.get_nn_discrete_value_size(), dtype=np.float32)
+            self.reference_policy = np.zeros(py.get_batch_size() * (py.get_muzero_unrolling_step() + 1) * py.get_nn_action_size(), dtype=np.float32)
 
     def load_data(self, training_dir, start_iter, end_iter):
         for i in range(start_iter, end_iter + 1):
@@ -49,7 +51,7 @@ class MinizeroDadaLoader:
                 self.data_list.pop(0)
 
     def sample_data(self, device='cpu'):
-        self.data_loader.sample_data(self.features, self.action_features, self.policy, self.value, self.reward, self.loss_scale, self.sampled_index)
+        self.data_loader.sample_data(self.features, self.action_features, self.policy, self.reference_policy, self.value, self.reward, self.loss_scale, self.sampled_index)
         features = torch.FloatTensor(self.features).view(py.get_batch_size(), py.get_nn_num_input_channels(), py.get_nn_input_channel_height(), py.get_nn_input_channel_width()).to(device)
         action_features = None if self.action_features is None else torch.FloatTensor(self.action_features).view(py.get_batch_size(),
                                                                                                                  -1,
@@ -57,6 +59,7 @@ class MinizeroDadaLoader:
                                                                                                                  py.get_nn_hidden_channel_height(),
                                                                                                                  py.get_nn_hidden_channel_width()).to(device)
         policy = torch.FloatTensor(self.policy).view(py.get_batch_size(), -1, py.get_nn_action_size()).to(device)
+        reference_policy = torch.FloatTensor(self.reference_policy).view(py.get_batch_size(), -1, py.get_nn_action_size()).to(device)
         if py.get_nn_type_name() == "alphazero":
             value = torch.FloatTensor(self.value).view(py.get_batch_size(), 1, self.value_output_size).to(device)
         else:
@@ -65,7 +68,7 @@ class MinizeroDadaLoader:
         loss_scale = torch.FloatTensor(self.loss_scale / np.amax(self.loss_scale)).to(device)
         sampled_index = self.sampled_index
 
-        return features, action_features, policy, value, reward, loss_scale, sampled_index
+        return features, action_features, policy, reference_policy, value, reward, loss_scale, sampled_index
 
     def update_priority(self, sampled_index, batch_values):
         batch_values = (batch_values * self.value_accumulator).sum(axis=1)
@@ -160,6 +163,13 @@ def calculate_player_value_losses(network_output, label_value, loss_scale):
     return (value_error * loss_scale.view(-1, 1)).mean(dim=0)
 
 
+def calculate_reference_kl(network_output, reference_policy, loss_scale):
+    log_policy = nn.functional.log_softmax(network_output["policy_logit"], dim=1)
+    reference_log_policy = torch.log(reference_policy.clamp_min(1e-8))
+    per_sample_kl = (reference_policy * (reference_log_policy - log_policy)).sum(dim=1)
+    return (per_sample_kl * loss_scale).mean()
+
+
 def add_training_info(training_info, key, value):
     if key not in training_info:
         training_info[key] = 0
@@ -183,17 +193,19 @@ def train(model, training_dir, data_loader, start_iter, end_iter):
     training_info = {}
     for i in range(1, py.get_training_step() + 1):
         model.optimizer.zero_grad()
-        features, action_features, label_policy, label_value, label_reward, loss_scale, sampled_index = data_loader.sample_data(model.device)
+        features, action_features, label_policy, reference_policy, label_value, label_reward, loss_scale, sampled_index = data_loader.sample_data(model.device)
 
         if py.get_nn_type_name() == "alphazero":
             network_output = model.network(features)
             loss_policy, loss_value, _ = calculate_loss(network_output, label_policy[:, 0], label_value[:, 0], None, loss_scale)
-            loss = loss_policy + py.get_value_loss_scale() * loss_value
+            loss_reference_kl = calculate_reference_kl(network_output, reference_policy[:, 0], loss_scale)
+            loss = loss_policy + py.get_value_loss_scale() * loss_value + py.get_policy_reference_loss_scale() * loss_reference_kl
 
             # record training info
             add_training_info(training_info, 'loss_policy', loss_policy.item())
             add_training_info(training_info, 'accuracy_policy', calculate_accuracy(network_output["policy_logit"], label_policy[:, 0], py.get_batch_size()))
             add_training_info(training_info, 'loss_value', loss_value.item())
+            add_training_info(training_info, 'loss_reference_kl', loss_reference_kl.item())
             if py.get_nn_num_players() > 2:
                 player_value_losses = calculate_player_value_losses(network_output, label_value[:, 0], loss_scale)
                 for player_index, player_value_loss in enumerate(player_value_losses):
@@ -261,6 +273,8 @@ if __name__ == '__main__':
         exit(0)
 
     py.load_config_file(conf_file_name)
+    torch.manual_seed(py.get_program_seed())
+    np.random.seed(py.get_program_seed())
     data_loader = MinizeroDadaLoader(conf_file_name)
     model = Model()
 

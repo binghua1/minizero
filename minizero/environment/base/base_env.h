@@ -267,9 +267,23 @@ public:
 
     virtual std::vector<float> getPolicy(const int pos, utils::Rotation rotation = utils::Rotation::kRotationNone) const
     {
+        return getPolicyByTag(pos, "P", rotation);
+    }
+
+    virtual std::vector<float> getReferencePolicy(const int pos, utils::Rotation rotation = utils::Rotation::kRotationNone) const
+    {
+        if (pos < static_cast<int>(action_pairs_.size()) && action_pairs_[pos].second.count("A")) {
+            return getPolicyByTag(pos, "A", rotation);
+        }
+        return getPolicy(pos, rotation);
+    }
+
+    virtual std::vector<float> getPolicyByTag(const int pos, const std::string& tag, utils::Rotation rotation = utils::Rotation::kRotationNone) const
+    {
         std::vector<float> policy(getPolicySize(), 0.0f);
         if (pos < static_cast<int>(action_pairs_.size())) {
-            const std::string policy_distribution = action_pairs_[pos].second["P"];
+            const auto info = action_pairs_[pos].second.find(tag);
+            const std::string policy_distribution = (info == action_pairs_[pos].second.end() ? "" : info->second);
             if (policy_distribution.empty()) {
                 policy[getRotateAction(action_pairs_[pos].first.getActionID(), rotation)] = 1.0f;
             } else {

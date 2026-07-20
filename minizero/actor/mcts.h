@@ -33,6 +33,7 @@ public:
     inline void addVirtualLoss(float num = 1.0f) { virtual_loss_ += num; }
     inline void removeVirtualLoss(float num = 1.0f) { virtual_loss_ -= num; }
     inline void setPolicy(float policy) { policy_ = policy; }
+    inline void setReferencePolicy(float policy) { reference_policy_ = policy; }
     inline void setPolicyLogit(float policy_logit) { policy_logit_ = policy_logit; }
     inline void setPolicyNoise(float policy_noise) { policy_noise_ = policy_noise; }
     inline void setValue(float value) { value_ = value; }
@@ -46,10 +47,12 @@ public:
     inline float getCountWithVirtualLoss() const { return count_ + virtual_loss_; }
     inline float getVirtualLoss() const { return virtual_loss_; }
     inline float getPolicy() const { return policy_; }
+    inline float getReferencePolicy() const { return reference_policy_; }
     inline float getPolicyLogit() const { return policy_logit_; }
     inline float getPolicyNoise() const { return policy_noise_; }
     inline float getValue() const { return value_; }
     inline float getReward() const { return reward_; }
+    inline float getVariance() const { return count_ > 0.0f ? std::max(0.0f, value_square_sum_ / count_ - mean_ * mean_) : 0.0f; }
     inline virtual MCTSNode* getChild(int index) const override { return (index < num_children_ ? static_cast<MCTSNode*>(first_child_) + index : nullptr); }
 
 protected:
@@ -58,10 +61,12 @@ protected:
     float count_;
     float virtual_loss_;
     float policy_;
+    float reference_policy_;
     float policy_logit_;
     float policy_noise_;
     float value_;
     float reward_;
+    float value_square_sum_;
 };
 
 class HiddenStateData {
@@ -96,6 +101,11 @@ public:
     virtual MCTSNode* selectChildByMaxCount(const MCTSNode* node) const;
     virtual MCTSNode* selectChildBySoftmaxCount(const MCTSNode* node, float temperature = 1.0f, float value_threshold = 0.1f) const;
     virtual std::string getSearchDistributionString() const;
+    virtual std::string getReferencePolicyString() const;
+    virtual std::vector<float> calculateCertifiedDeviationPolicy() const;
+    virtual std::string getCertifiedDeviationPolicyString() const;
+    virtual std::string getDeviationDiagnosticsString() const;
+    virtual float getCertifiedDeviationPolicyKL() const;
     virtual std::vector<MCTSNode*> select() { return selectFromNode(getRootNode()); }
     virtual std::vector<MCTSNode*> selectFromNode(MCTSNode* start_node);
     virtual void expand(MCTSNode* leaf_node, const std::vector<ActionCandidate>& action_candidates);

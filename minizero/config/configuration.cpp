@@ -19,6 +19,12 @@ float actor_mcts_think_time_limit = 0;
 bool actor_mcts_value_rescale = false;
 char actor_mcts_value_flipping_player = 'W';
 std::string actor_multiplayer_search_type = "maxn";
+std::string actor_policy_target_type = "visit";
+float actor_deviation_temperature = 0.25f;
+float actor_deviation_kl_budget = 0.05f;
+float actor_deviation_confidence_scale = 1.0f;
+float actor_deviation_variance_prior = 0.25f;
+float actor_deviation_prior_count = 2.0f;
 bool actor_select_action_by_count = false;
 bool actor_select_action_by_softmax_count = true;
 float actor_select_action_softmax_temperature = 1.0f;
@@ -64,6 +70,7 @@ float learner_learning_rate = 0.02;
 float learner_momentum = 0.9;
 float learner_weight_decay = 0.0001;
 float learner_value_loss_scale = 1.0f;
+float learner_policy_reference_loss_scale = 0.0f;
 int learner_num_thread = 8;
 
 // network parameters
@@ -107,6 +114,12 @@ void setConfiguration(ConfigureLoader& cl)
     cl.addParameter("actor_mcts_think_batch_size", actor_mcts_think_batch_size, "the MCTS selection batch size; only works when running console", "Actor");
     cl.addParameter("actor_mcts_think_time_limit", actor_mcts_think_time_limit, "the MCTS time limit in seconds, 0 represents disabling time limit (only uses actor_num_simulation); only works when running console", "Actor");
     cl.addParameter("actor_multiplayer_search_type", actor_multiplayer_search_type, "the multiplayer tree-search backup type: maxn or paranoid", "Actor");
+    cl.addParameter("actor_policy_target_type", actor_policy_target_type, "the AlphaZero policy target: visit or certified_deviation", "Actor");
+    cl.addParameter("actor_deviation_temperature", actor_deviation_temperature, "temperature of the positive-deviation exponentiated policy update", "Actor");
+    cl.addParameter("actor_deviation_kl_budget", actor_deviation_kl_budget, "maximum KL(target || reference) for a certified-deviation policy target", "Actor");
+    cl.addParameter("actor_deviation_confidence_scale", actor_deviation_confidence_scale, "scale of the empirical deviation confidence radius; 0 disables confidence shrinkage", "Actor");
+    cl.addParameter("actor_deviation_variance_prior", actor_deviation_variance_prior, "prior variance used for low-visit action confidence estimates", "Actor");
+    cl.addParameter("actor_deviation_prior_count", actor_deviation_prior_count, "pseudo-count attached to the deviation variance prior", "Actor");
     cl.addParameter("actor_select_action_by_count", actor_select_action_by_count, "true for selecting the action by the maximum MCTS count; should not be true together with actor_select_action_by_softmax_count", "Actor");
     cl.addParameter("actor_select_action_by_softmax_count", actor_select_action_by_softmax_count, "true for selecting the action by the propotion of MCTS count; should not be true together with actor_select_action_by_count", "Actor");
     cl.addParameter("actor_select_action_softmax_temperature", actor_select_action_softmax_temperature, "the softmax temperature when using actor_select_action_by_softmax_count", "Actor");
@@ -152,6 +165,7 @@ void setConfiguration(ConfigureLoader& cl)
     cl.addParameter("learner_momentum", learner_momentum, "hyperparameter for momentum; only for sgd", "Learner");
     cl.addParameter("learner_weight_decay", learner_weight_decay, "hyperparameter for weight decay; usually 0.0001 for sgd, 0 for adam, 0.01 for adamw", "Learner");
     cl.addParameter("learner_value_loss_scale", learner_value_loss_scale, "hyperparameter for scaling of the value loss", "Learner");
+    cl.addParameter("learner_policy_reference_loss_scale", learner_policy_reference_loss_scale, "KL anchor scale from the current policy to the frozen self-play reference policy; use with certified-deviation targets", "Learner");
     cl.addParameter("learner_num_thread", learner_num_thread, "the number of threads for training", "Learner");
 
     // network parameters

@@ -2,6 +2,7 @@
 #include "tictacmo.h"
 #include "zero_server.h"
 #include <cassert>
+#include <cmath>
 #include <vector>
 
 int main()
@@ -31,6 +32,24 @@ int main()
     assert(loaded.loadFromString(loader.toString()));
     assert(loaded.getActionPairs().size() == 7);
     assert(loaded.getValue(0) == std::vector<float>({1.0f, -1.0f, -1.0f}));
+
+    TicTacMoEnv replay_env;
+    assert(replay_env.act(TicTacMoAction(0, replay_env.getTurn())));
+    const std::vector<std::vector<std::pair<std::string, std::string>>> replay_info{{
+        {"P", "0:1,1:1"},
+        {"A", "0:3,1:1"},
+        {"N", "0:2,1:1"},
+        {"D", "0:0.2:2,1:-0.1:1"},
+        {"K", "0.01"},
+    }};
+    TicTacMoEnvLoader replay_loader;
+    replay_loader.loadFromEnvironment(replay_env, replay_info);
+    TicTacMoEnvLoader reloaded_replay;
+    assert(reloaded_replay.loadFromString(replay_loader.toString()));
+    const std::vector<float> replay_policy = reloaded_replay.getPolicy(0);
+    const std::vector<float> replay_reference = reloaded_replay.getReferencePolicy(0);
+    assert(replay_policy[0] == 0.5f && replay_policy[1] == 0.5f);
+    assert(replay_reference[0] == 0.75f && replay_reference[1] == 0.25f);
 
     MCTS mcts(8);
     mcts.reset();
@@ -118,6 +137,37 @@ int main()
            vector_player1_edge->getNormalizedMean(vector_two_player_mcts.getTreeValueBound(), true));
     assert(scalar_player2_edge->getNormalizedMean(scalar_two_player_mcts.getTreeValueBound()) ==
            vector_player2_edge->getNormalizedMean(vector_two_player_mcts.getTreeValueBound(), true));
+
+    // Certified-deviation targets must improve a supported profitable action
+    // while respecting the configured trust-region budget.
+    MCTS deviation_mcts(16);
+    deviation_mcts.reset();
+    deviation_mcts.setRootPlayer(Player::kPlayer1);
+    MCTSNode* deviation_root = deviation_mcts.getRootNode();
+    deviation_mcts.expand(deviation_root, {
+                                             {Action(3, Player::kPlayer1), 0.5f, 0.0f},
+                                             {Action(4, Player::kPlayer1), 0.3f, 0.0f},
+                                             {Action(5, Player::kPlayer1), 0.2f, 0.0f},
+                                         });
+    for (int sample = 0; sample < 6; ++sample) {
+        deviation_mcts.backup({deviation_root, deviation_root->getChild(0)}, PlayerValues{0.8f, -0.2f, -0.4f});
+    }
+    for (int sample = 0; sample < 3; ++sample) {
+        deviation_mcts.backup({deviation_root, deviation_root->getChild(1)}, PlayerValues{0.1f, 0.0f, -0.1f});
+    }
+    deviation_mcts.backup({deviation_root, deviation_root->getChild(2)}, PlayerValues{-0.5f, 0.3f, 0.2f});
+    const float old_confidence_scale = config::actor_deviation_confidence_scale;
+    const float old_kl_budget = config::actor_deviation_kl_budget;
+    config::actor_deviation_confidence_scale = 0.0f;
+    config::actor_deviation_kl_budget = 0.02f;
+    const std::vector<float> deviation_policy = deviation_mcts.calculateCertifiedDeviationPolicy();
+    assert(deviation_policy.size() == 3);
+    assert(deviation_policy[0] > 0.5f);
+    assert(deviation_policy[2] < 0.2f);
+    assert(deviation_mcts.getCertifiedDeviationPolicyKL() <= config::actor_deviation_kl_budget + 1e-5f);
+    assert(std::abs(deviation_policy[0] + deviation_policy[1] + deviation_policy[2] - 1.0f) < 1e-5f);
+    config::actor_deviation_confidence_scale = old_confidence_scale;
+    config::actor_deviation_kl_budget = old_kl_budget;
 
     zero::ZeroSelfPlayData multiplayer_data("SelfPlay true 10 10 1,-1,-1 (;GM[tictacmo]RE[1,-1,-1]) #");
     assert(multiplayer_data.return_ == 1.0f);

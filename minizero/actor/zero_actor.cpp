@@ -127,6 +127,19 @@ void ZeroActor::setNetwork(const std::shared_ptr<network::Network>& network)
     }
     assert((alphazero_network_ && !muzero_network_) || (!alphazero_network_ && muzero_network_));
 
+    if (config::actor_policy_target_type != "visit" && config::actor_policy_target_type != "certified_deviation") {
+        throw std::runtime_error("actor policy target type must be visit or certified_deviation");
+    }
+    if (config::actor_policy_target_type == "certified_deviation") {
+        if (!alphazero_network_) { throw std::runtime_error("certified-deviation targets currently support AlphaZero only"); }
+        if (config::actor_use_gumbel) { throw std::runtime_error("certified-deviation targets cannot be combined with Gumbel search"); }
+        if (config::actor_deviation_temperature <= 0.0f) { throw std::runtime_error("actor_deviation_temperature must be positive"); }
+        if (config::actor_deviation_kl_budget < 0.0f) { throw std::runtime_error("actor_deviation_kl_budget cannot be negative"); }
+        if (config::actor_deviation_confidence_scale < 0.0f || config::actor_deviation_variance_prior < 0.0f || config::actor_deviation_prior_count < 0.0f) {
+            throw std::runtime_error("certified-deviation uncertainty parameters cannot be negative");
+        }
+    }
+
     if (env_.getNumPlayer() > 2) {
         if (config::actor_multiplayer_search_type != "maxn" && config::actor_multiplayer_search_type != "paranoid") {
             throw std::runtime_error("multiplayer search type must be maxn or paranoid");
@@ -143,8 +156,23 @@ void ZeroActor::setNetwork(const std::shared_ptr<network::Network>& network)
 std::vector<std::pair<std::string, std::string>> ZeroActor::getActionInfo() const
 {
     // ignore recording mcts action info if there is no search
-    if (getMCTS()->getRootNode()->getCount() > 0) { return BaseActor::getActionInfo(); }
+    if (getMCTS()->getRootNode()->getCount() > 0) {
+        auto action_info = BaseActor::getActionInfo();
+        if (config::actor_policy_target_type == "certified_deviation") {
+            action_info.push_back({"A", getMCTS()->getReferencePolicyString()});
+            action_info.push_back({"N", getMCTS()->getSearchDistributionString()});
+            action_info.push_back({"D", getMCTS()->getDeviationDiagnosticsString()});
+            action_info.push_back({"K", std::to_string(getMCTS()->getCertifiedDeviationPolicyKL())});
+        }
+        return action_info;
+    }
     return {};
+}
+
+std::string ZeroActor::getMCTSPolicy() const
+{
+    if (config::actor_policy_target_type == "certified_deviation") { return getMCTS()->getCertifiedDeviationPolicyString(); }
+    return config::actor_use_gumbel ? gumbel_zero_.getMCTSPolicy(getMCTS()) : getMCTS()->getSearchDistributionString();
 }
 
 std::string ZeroActor::getEnvReward() const
@@ -263,6 +291,14 @@ std::vector<MCTS::ActionCandidate> ZeroActor::calculateAlphaZeroActionPolicy(con
             throw std::runtime_error("rotated action ID is outside the AlphaZero policy range");
         }
         action_candidates.push_back(MCTS::ActionCandidate(action, alphazero_output->policy_[rotated_id], alphazero_output->policy_logits_[rotated_id]));
+    }
+    float legal_policy_sum = 0.0f;
+    for (const auto& candidate : action_candidates) { legal_policy_sum += candidate.policy_; }
+    if (legal_policy_sum <= 0.0f) {
+        const float uniform_policy = 1.0f / action_candidates.size();
+        for (auto& candidate : action_candidates) { candidate.policy_ = uniform_policy; }
+    } else {
+        for (auto& candidate : action_candidates) { candidate.policy_ /= legal_policy_sum; }
     }
     sort(action_candidates.begin(), action_candidates.end(), [](const MCTS::ActionCandidate& lhs, const MCTS::ActionCandidate& rhs) {
         return lhs.policy_ > rhs.policy_;

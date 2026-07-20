@@ -21,6 +21,12 @@ extern float actor_mcts_think_time_limit;
 extern bool actor_mcts_value_rescale;
 extern char actor_mcts_value_flipping_player;
 extern std::string actor_multiplayer_search_type;
+extern std::string actor_policy_target_type;
+extern float actor_deviation_temperature;
+extern float actor_deviation_kl_budget;
+extern float actor_deviation_confidence_scale;
+extern float actor_deviation_variance_prior;
+extern float actor_deviation_prior_count;
 extern bool actor_select_action_by_count;
 extern bool actor_select_action_by_softmax_count;
 extern float actor_select_action_softmax_temperature;
@@ -66,6 +72,7 @@ extern float learner_learning_rate;
 extern float learner_momentum;
 extern float learner_weight_decay;
 extern float learner_value_loss_scale;
+extern float learner_policy_reference_loss_scale;
 extern int learner_num_thread;
 
 // network parameters

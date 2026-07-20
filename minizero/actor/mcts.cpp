@@ -10,10 +10,12 @@ void MCTSNode::reset()
     count_ = 0.0f;
     virtual_loss_ = 0.0f;
     policy_ = 0.0f;
+    reference_policy_ = 0.0f;
     policy_logit_ = 0.0f;
     policy_noise_ = 0.0f;
     value_ = 0.0f;
     reward_ = 0.0f;
+    value_square_sum_ = 0.0f;
     first_child_ = nullptr;
 }
 
@@ -23,6 +25,7 @@ void MCTSNode::add(float value, float weight /* = 1.0f */)
         reset();
     } else {
         count_ += weight;
+        value_square_sum_ += weight * value * value;
         mean_ += weight * (value - mean_) / count_;
     }
 }
@@ -33,6 +36,8 @@ void MCTSNode::remove(float value, float weight /* = 1.0f */)
         reset();
     } else {
         count_ -= weight;
+        value_square_sum_ -= weight * value * value;
+        value_square_sum_ = std::max(0.0f, value_square_sum_);
         mean_ -= weight * (value - mean_) / count_;
     }
 }
@@ -69,6 +74,7 @@ std::string MCTSNode::toString() const
     oss << std::fixed << "p = " << policy_
         << ", p_logit = " << policy_logit_
         << ", p_noise = " << policy_noise_
+        << ", p_ref = " << reference_policy_
         << ", v = " << value_
         << ", r = " << reward_
         << ", mean = " << mean_
@@ -141,6 +147,146 @@ std::string MCTS::getSearchDistributionString() const
     return oss.str();
 }
 
+std::string MCTS::getReferencePolicyString() const
+{
+    const MCTSNode* root = getRootNode();
+    float sum = 0.0f;
+    for (int i = 0; i < root->getNumChildren(); ++i) { sum += std::max(1e-8f, root->getChild(i)->getReferencePolicy()); }
+    std::ostringstream oss;
+    oss.precision(8);
+    for (int i = 0; i < root->getNumChildren(); ++i) {
+        if (i > 0) { oss << ","; }
+        oss << root->getChild(i)->getAction().getActionID() << ":"
+            << std::max(1e-8f, root->getChild(i)->getReferencePolicy()) / sum;
+    }
+    return oss.str();
+}
+
+std::vector<float> MCTS::calculateCertifiedDeviationPolicy() const
+{
+    const MCTSNode* root = getRootNode();
+    const int num_actions = root->getNumChildren();
+    if (num_actions == 0) { return {}; }
+
+    constexpr float kMinProbability = 1e-8f;
+    std::vector<float> reference(num_actions), q_values(num_actions), radii(num_actions), proposal(num_actions);
+    float reference_sum = 0.0f;
+    for (int i = 0; i < num_actions; ++i) {
+        reference[i] = std::max(kMinProbability, root->getChild(i)->getReferencePolicy());
+        reference_sum += reference[i];
+    }
+    for (float& probability : reference) { probability /= reference_sum; }
+
+    const float root_value = root->getMean();
+    float baseline = 0.0f;
+    for (int i = 0; i < num_actions; ++i) {
+        const MCTSNode* child = root->getChild(i);
+        const float count = child->getCount();
+        q_values[i] = count > 0.0f ? child->getNormalizedMean(tree_value_bound_, use_player_value_backup_) : root_value;
+        const float variance_numerator = count * child->getVariance() +
+                                         config::actor_deviation_prior_count * config::actor_deviation_variance_prior;
+        const float effective_count = std::max(1.0f, count + config::actor_deviation_prior_count);
+        radii[i] = config::actor_deviation_confidence_scale * std::sqrt(std::max(0.0f, variance_numerator) / (effective_count * effective_count));
+        baseline += reference[i] * q_values[i];
+    }
+
+    float visit_sum = 0.0f;
+    for (int i = 0; i < num_actions; ++i) {
+        visit_sum += root->getChild(i)->getCount();
+    }
+    for (int i = 0; i < num_actions; ++i) {
+        proposal[i] = visit_sum > 0.0f ? root->getChild(i)->getCount() / visit_sum : reference[i];
+    }
+
+    // Certify the policy-level improvement proposed by search, rather than
+    // independently accepting noisy action maxima. A soft gate retains a
+    // learning signal when the finite-search certificate is inconclusive.
+    float expected_improvement = 0.0f, uncertainty_squared = 0.0f;
+    for (int i = 0; i < num_actions; ++i) {
+        const float policy_shift = proposal[i] - reference[i];
+        expected_improvement += proposal[i] * (q_values[i] - baseline);
+        uncertainty_squared += policy_shift * policy_shift * radii[i] * radii[i];
+    }
+    const float lower_improvement = expected_improvement - std::sqrt(uncertainty_squared);
+    const float temperature = std::max(config::actor_deviation_temperature, 1e-6f);
+    const float evidence_gate = 1.0f / (1.0f + std::exp(-lower_improvement / temperature));
+
+    auto calculate_kl = [&reference, &proposal](float mix) {
+        float kl = 0.0f;
+        for (size_t i = 0; i < reference.size(); ++i) {
+            const float probability = (1.0f - mix) * reference[i] + mix * proposal[i];
+            if (probability <= 0.0f) { continue; }
+            kl += probability * std::log(probability / reference[i]);
+        }
+        return kl;
+    };
+
+    float mix = evidence_gate;
+    const float kl_budget = std::max(0.0f, config::actor_deviation_kl_budget);
+    if (calculate_kl(mix) > kl_budget) {
+        float lower = 0.0f, upper = mix;
+        for (int iteration = 0; iteration < 24; ++iteration) {
+            mix = (lower + upper) * 0.5f;
+            if (calculate_kl(mix) <= kl_budget) {
+                lower = mix;
+            } else {
+                upper = mix;
+            }
+        }
+        mix = lower;
+    }
+    for (int i = 0; i < num_actions; ++i) { proposal[i] = (1.0f - mix) * reference[i] + mix * proposal[i]; }
+    return proposal;
+}
+
+std::string MCTS::getCertifiedDeviationPolicyString() const
+{
+    const MCTSNode* root = getRootNode();
+    const std::vector<float> policy = calculateCertifiedDeviationPolicy();
+    std::ostringstream oss;
+    oss.precision(8);
+    for (int i = 0; i < root->getNumChildren(); ++i) {
+        oss << (i == 0 ? "" : ",") << root->getChild(i)->getAction().getActionID() << ":" << policy[i];
+    }
+    return oss.str();
+}
+
+float MCTS::getCertifiedDeviationPolicyKL() const
+{
+    const MCTSNode* root = getRootNode();
+    const std::vector<float> policy = calculateCertifiedDeviationPolicy();
+    float reference_sum = 0.0f;
+    for (int i = 0; i < root->getNumChildren(); ++i) { reference_sum += std::max(1e-8f, root->getChild(i)->getReferencePolicy()); }
+    float kl = 0.0f;
+    for (int i = 0; i < root->getNumChildren(); ++i) {
+        const float reference = std::max(1e-8f, root->getChild(i)->getReferencePolicy()) / reference_sum;
+        kl += policy[i] * std::log(policy[i] / reference);
+    }
+    return kl;
+}
+
+std::string MCTS::getDeviationDiagnosticsString() const
+{
+    const MCTSNode* root = getRootNode();
+    float reference_sum = 0.0f, baseline = 0.0f;
+    for (int i = 0; i < root->getNumChildren(); ++i) { reference_sum += std::max(1e-8f, root->getChild(i)->getReferencePolicy()); }
+    for (int i = 0; i < root->getNumChildren(); ++i) {
+        const MCTSNode* child = root->getChild(i);
+        const float reference = std::max(1e-8f, child->getReferencePolicy()) / reference_sum;
+        baseline += reference * (child->getCount() > 0.0f ? child->getNormalizedMean(tree_value_bound_, use_player_value_backup_) : root->getMean());
+    }
+    std::ostringstream oss;
+    oss.precision(6);
+    for (int i = 0; i < root->getNumChildren(); ++i) {
+        const MCTSNode* child = root->getChild(i);
+        if (i > 0) { oss << ","; }
+        oss << child->getAction().getActionID() << ":"
+            << (child->getCount() > 0.0f ? child->getNormalizedMean(tree_value_bound_, use_player_value_backup_) - baseline : 0.0f)
+            << ":" << child->getCount();
+    }
+    return oss.str();
+}
+
 std::vector<MCTSNode*> MCTS::selectFromNode(MCTSNode* start_node)
 {
     assert(start_node);
@@ -164,6 +310,7 @@ void MCTS::expand(MCTSNode* leaf_node, const std::vector<ActionCandidate>& actio
         child->reset();
         child->setAction(candidate.action_);
         child->setPolicy(candidate.policy_);
+        child->setReferencePolicy(candidate.policy_);
         child->setPolicyLogit(candidate.policy_logit_);
     }
 }

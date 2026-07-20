@@ -4,6 +4,7 @@ __pycache__
 
 # configuration file
 *.cfg
+!config/cdaz/*.cfg
 
 # training folder
 *_az_*/

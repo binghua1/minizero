@@ -214,6 +214,10 @@ Check `ms_pacman_mz_n50/analysis/*_Return.png` for the results.
 
 For more evaluation details, please refer to [this instructions](docs/Evaluation.md).
 
+Multiplayer environments, balanced arenas, and the opt-in CD-AZ stability
+experiment are documented in [Multiplayer.md](docs/Multiplayer.md) and
+[CertifiedDeviationAlphaZero.md](docs/CertifiedDeviationAlphaZero.md).
+
 ### Console
 
 To interact with a trained model using [Go Text Protocol (GTP)](http://www.lysator.liu.se/~gunnar/gtp/).

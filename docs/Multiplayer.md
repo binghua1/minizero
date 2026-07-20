@@ -4,6 +4,8 @@ The classic four-player Blokus environment and its large spatial action represen
 
 MiniZero's multiplayer AlphaZero path uses an absolute utility vector at network leaves and terminal states. MCTS edges remain scalar, with selectable MaxN or Paranoid backup semantics.
 
+The opt-in [Certified-Deviation AlphaZero](CertifiedDeviationAlphaZero.md) experiment adds an evidence-gated KL trust region at the search-to-learner boundary while preserving the standard visit-target path.
+
 - `actor_multiplayer_search_type=maxn` stores the utility component of the player who selected each edge, so every player maximizes their own value.
 - `actor_multiplayer_search_type=paranoid` stores the root player's utility on root-player edges and its negation on every opponent edge, so all opponents act as a coalition minimizing the root player's value.
 
