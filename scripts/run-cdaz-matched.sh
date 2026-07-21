@@ -10,7 +10,7 @@ usage() {
 [[ $# -ge 3 ]] || usage
 
 game=$1
-baseline_dir=$(readlink -f "$2")
+baseline_arg=$2
 end_iteration=$3
 output_root=${4:-experiments/${game}_cdaz_matched}
 eval_interval=${5:-10}
@@ -18,7 +18,12 @@ eval_games=${6:-200}
 fixed_port=${FIXED_PORT:-19101}
 cdaz_port=${CDAZ_PORT:-19102}
 
-[[ -d ${baseline_dir} ]] || { echo "Baseline directory not found: ${baseline_dir}" >&2; exit 1; }
+if [[ ! -d ${baseline_arg} ]]; then
+    echo "Baseline directory not found inside this container: ${baseline_arg}" >&2
+    echo "Restart the container with: scripts/start-container.sh -v /home/i_binghua/minizero_mul:/baseline:ro" >&2
+    exit 1
+fi
+baseline_dir=$(readlink -f -- "${baseline_arg}")
 baseline_config=$(find "${baseline_dir}" -maxdepth 1 -type f -name '*.cfg' -print -quit)
 [[ -n ${baseline_config} ]] || { echo "No baseline config found in ${baseline_dir}." >&2; exit 1; }
 [[ -f ${baseline_dir}/sgf/${end_iteration}.sgf ]] || {
