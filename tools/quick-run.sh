@@ -31,6 +31,7 @@ usage() {
         echo "             --sp_gpu               Assign available GPUs for self-play workers, e.g. 0123"
         echo "             --op_conf_str          Set additional settings for optimization worker"
         echo "             --op_gpu               Assign available GPUs for optimization worker, e.g. 0123"
+        echo "             --initial_model_prefix Reuse PREFIX.pt and PREFIX.pkl as weight_iter_0"
         ;;
     self-eval)
         echo "Usage: $0 self-eval GAME_TYPE FOLDER [CONF_FILE] [INTERVAL] [GAMENUM] [OPTION]..."
@@ -203,6 +204,7 @@ while [[ $1 ]]; do
     --op_conf_str)      op_conf_str=$2; shift; ;;
     --sp_gpu)           SP_CUDA_VISIBLE_DEVICES=$(echo ${2//,/} | grep -o . | xargs | tr ' ' ','); shift; ;;
     --op_gpu)           OP_CUDA_VISIBLE_DEVICES=$(echo ${2//,/} | grep -o . | xargs | tr ' ' ','); shift; ;;
+    --initial_model_prefix) initial_model_prefix=$2; shift; ;;
     -gen)               gen_conf_file=$2; shift; ;;
     -s)                 eval_start_index=$2; shift; ;;
     -d)                 eval_folder_name=$2; shift; ;;
@@ -428,10 +430,14 @@ if [[ $mode == train ]]; then # ================================ TRAIN =========
     log INFO "Training folder: $train_dir"
 
     declare -A PID
+    initial_model_option=()
+    if [[ $initial_model_prefix ]]; then
+        initial_model_option=(--initial_model_prefix "$initial_model_prefix")
+    fi
 
     # launch zero server
     {
-        $launch scripts/zero-server.sh $game $conf_file $zero_end_iteration -n "$train_dir" -g ${CUDA_VISIBLE_DEVICES//,/} -conf_str "$conf_str"
+        $launch scripts/zero-server.sh $game $conf_file $zero_end_iteration -n "$train_dir" -g ${CUDA_VISIBLE_DEVICES//,/} -conf_str "$conf_str" "${initial_model_option[@]}"
     } 2>&1 | tee >(watchdog "Worker Disconnection|^Failed to|Segmentation fault|Killed|Aborted|^[A-Za-z.]+Error") | colorize OUT_TRAIN &
     PID[$!]=server
     server_pid=$!

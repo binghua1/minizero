@@ -115,6 +115,39 @@ report bootstrap confidence intervals for area under the strength curve,
 regressions between adjacent checkpoints, final strength, target KL, and wall
 clock/sample efficiency.
 
+### Matched comparison against an existing completed run
+
+`run-cdaz-matched.sh` is the appropriate driver when a conventional
+Multiplayer AlphaZero run already exists. It reads that run's generated config,
+reuses its exact `weight_iter_0.pt` and `weight_iter_0.pkl`, and leaves the
+completed run untouched. It trains only the two missing arms:
+
+1. `fixed_mpaz`: raw visit targets with legal-policy renormalization;
+2. `cdaz`: the same fixed implementation plus the CD-AZ target and KL anchor.
+
+The existing run remains the third `current_mpaz` arm. For example, mount the
+old repository read-only when starting the development container:
+
+```bash
+cd ~/minizero-dev
+scripts/start-container.sh -v /home/i_binghua/minizero_mul:/baseline:ro
+```
+
+Then run inside the container:
+
+```bash
+scripts/run-cdaz-matched.sh \
+  tictacmo /baseline/tictacmo_maxn_smoke_02 30 \
+  experiments/tictacmo_cdaz_matched 10 200
+```
+
+For this baseline, all training arms use 2,000 self-play games, 500 learner
+steps, batch size 1,024, 50 simulations, SGD at 0.02, and the original
+one-block/256-channel network for every iteration. The two new arms are run
+sequentially and each performs 60,000 self-play games. The completed current
+arm is evaluated again with the same executable and arena settings but is not
+retrained.
+
 ## Initial smoke result (2026-07-21)
 
 A three-iteration TicTacMo run (128 self-play games and 50 learner steps per

@@ -23,6 +23,7 @@ usage()
 	echo "             --sp_executable_file   Assign the path for self-play executable file"
 	echo "             --op_executable_file   Assign the path for optimization executable file"
 	echo "             --link_sgf             Assign the path of sgf for training without self play (only op)"
+	echo "             --initial_model_prefix Reuse PREFIX.pt and PREFIX.pkl as weight_iter_0"
 	echo "  -conf_str                         Overwrite settings in the configure file"
 	exit 1
 }
@@ -44,6 +45,7 @@ sp_executable_file=build/${game_type}/minizero_${game_type}
 op_executable_file=minizero/learner/train.py
 overwrite_conf_str=""
 link_sgf=""
+initial_model_prefix=""
 while :; do
 	case $1 in
 		-h|--help) shift; usage
@@ -62,6 +64,8 @@ while :; do
 		;;
 		--link_sgf) shift; link_sgf=$1
 		;;
+		--initial_model_prefix) shift; initial_model_prefix=$1
+		;;
 		-conf_str) shift; overwrite_conf_str=$1
 		;;
 		"") break
@@ -71,6 +75,11 @@ while :; do
 	esac
 	shift
 done
+
+if [[ -n ${initial_model_prefix} ]] && { [[ ! -f ${initial_model_prefix}.pt ]] || [[ ! -f ${initial_model_prefix}.pkl ]]; }; then
+	echo "Initial model requires both ${initial_model_prefix}.pt and ${initial_model_prefix}.pkl." >&2
+	exit 1
+fi
 
 # create default name; also check if configurations are valid
 testrun_stderr_tmp=$(mktemp)
@@ -111,8 +120,14 @@ if [[ ${run_stage,} == "r" ]]; then
 	${sp_executable_file} -gen ${train_dir}/${new_configure_file} -conf_file ${configure_file} -conf_str "${overwrite_conf_str}" 2>/dev/null
 
 	# setup initial weight
-	cuda_devices=$(echo ${gpu_list} | awk '{ split($0, chars, ""); printf(chars[1]); for(i=2; i<=length(chars); ++i) { printf(","chars[i]); } }')
-	echo "train \"\" -1 -1" | CUDA_VISIBLE_DEVICES=${cuda_devices} PYTHONPATH=. python ${op_executable_file} ${game_type} ${train_dir} ${train_dir}/${new_configure_file} >/dev/null 2>&1
+	if [[ -n ${initial_model_prefix} ]]; then
+		cp "${initial_model_prefix}.pt" "${train_dir}/model/weight_iter_0.pt"
+		cp "${initial_model_prefix}.pkl" "${train_dir}/model/weight_iter_0.pkl"
+		echo "reuse initial model: ${initial_model_prefix}.{pt,pkl}"
+	else
+		cuda_devices=$(echo ${gpu_list} | awk '{ split($0, chars, ""); printf(chars[1]); for(i=2; i<=length(chars); ++i) { printf(","chars[i]); } }')
+		echo "train \"\" -1 -1" | CUDA_VISIBLE_DEVICES=${cuda_devices} PYTHONPATH=. python ${op_executable_file} ${game_type} ${train_dir} ${train_dir}/${new_configure_file} >/dev/null 2>&1
+	fi
 elif [[ ${run_stage,} == "c" ]]; then
 	zero_start_iteration=$(ls ${train_dir}/model/ | grep ".pt$" | wc -l)
 	model_file=$(ls ${train_dir}/model/ | grep ".pt$" | sort -V | tail -n1)
