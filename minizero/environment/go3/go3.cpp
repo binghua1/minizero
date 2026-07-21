@@ -84,7 +84,15 @@ bool Go3Env::act(const Go3Action& action)
 
 bool Go3Env::act(const std::vector<std::string>& action_string_args)
 {
-    return act(Go3Action(action_string_args));
+    assert(action_string_args.size() == 2);
+    assert(action_string_args[0].size() == 1);
+    Player player = charToPlayer(action_string_args[0][0]);
+    std::string action = action_string_args[1];
+    std::transform(action.begin(), action.end(), action.begin(), [](unsigned char c) { return std::toupper(c); });
+    int action_id = action == "PASS"
+                        ? getPassActionID()
+                        : utils::SGFLoader::boardCoordinateStringToActionID(action_string_args[1], board_size_);
+    return act(Go3Action(action_id, player));
 }
 
 std::vector<Go3Action> Go3Env::getLegalActions() const

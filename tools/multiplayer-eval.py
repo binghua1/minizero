@@ -49,6 +49,14 @@ def default_terminal_passes(game):
     return 1
 
 
+def default_pass_mode(game):
+    if game in ("blokus", "blokus10"):
+        return "elimination"
+    if game == "go3":
+        return "consecutive"
+    return "terminal"
+
+
 @dataclass(frozen=True)
 class AgentSpec:
     name: str
@@ -204,11 +212,14 @@ def load_manifest(path):
         "num_games": int(data["num_games"]) if data.get("num_games") is not None else None,
         "max_moves": int(data.get("max_moves", 2048)),
         "terminal_passes": int(data.get("terminal_passes", 1)),
+        "pass_mode": str(data.get("pass_mode", default_pass_mode(str(data.get("game", "multiplayer"))))),
         "command_timeout": float(data.get("command_timeout", 300)),
         "seed": int(data.get("seed", 0)),
     }
     if config["seat_mode"] not in ("fixed", "cyclic", "all_permutations"):
         raise ValueError("seat_mode must be fixed, cyclic, or all_permutations")
+    if config["pass_mode"] not in ("terminal", "consecutive", "elimination"):
+        raise ValueError("pass_mode must be terminal, consecutive, or elimination")
     if (config["games_per_seating"] < 1 or
             (config["num_games"] is not None and config["num_games"] < 1) or
             config["max_moves"] < 1 or config["terminal_passes"] < 1 or config["command_timeout"] <= 0):
@@ -304,28 +315,34 @@ def result_info(returns):
     return (winners[0], False) if len(winners) == 1 else (None, True)
 
 
-def play_game(engines, players, max_moves, terminal_passes=1):
+def play_game(engines, players, max_moves, terminal_passes=1, pass_mode="terminal"):
     for engine in engines:
         engine.command_response("clear_board")
 
     moves = []
     turn = 0
     eliminated = set()
+    consecutive_passes = 0
     for ply in range(max_moves + 1):
         action = engines[turn].command_response(f"genmove {players[turn]}").strip()
         if action.upper() == "PASS":
-            if terminal_passes == 1:
+            consecutive_passes += 1
+            if pass_mode == "terminal" or consecutive_passes >= terminal_passes:
                 game_string = engines[turn].command_response("game_string")
                 returns = parse_returns(game_string, len(players))
                 winner_seat, draw = result_info(returns)
-                return moves, returns, winner_seat, draw
-            eliminated.add(turn)
-            if len(eliminated) >= terminal_passes:
                 moves.append({"player": players[turn], "action": action})
-                game_string = engines[turn].command_response("game_string")
-                returns = parse_returns(game_string, len(players))
-                winner_seat, draw = result_info(returns)
                 return moves, returns, winner_seat, draw
+            if pass_mode == "elimination":
+                eliminated.add(turn)
+                if len(eliminated) >= terminal_passes:
+                    moves.append({"player": players[turn], "action": action})
+                    game_string = engines[turn].command_response("game_string")
+                    returns = parse_returns(game_string, len(players))
+                    winner_seat, draw = result_info(returns)
+                    return moves, returns, winner_seat, draw
+        else:
+            consecutive_passes = 0
         if action.lower() == "resign":
             raise RuntimeError("multiplayer resignation has no generic winner semantics; disable resignation")
         if ply == max_moves:
@@ -398,7 +415,13 @@ def run_seating(task, config, output_dir, completed, result_queue, worker_id, gp
                 "error": None,
             }
             try:
-                moves, returns, winner_seat, draw = play_game(engines, config["players"], config["max_moves"], config.get("terminal_passes", 1))
+                moves, returns, winner_seat, draw = play_game(
+                    engines,
+                    config["players"],
+                    config["max_moves"],
+                    config.get("terminal_passes", 1),
+                    config.get("pass_mode", "terminal"),
+                )
                 record.update({
                     "moves": moves,
                     "returns": returns,
@@ -822,6 +845,7 @@ def create_auto_manifest(args, repo_root, models, configs, executable):
         "games_per_seating": args.games_per_seating,
         "max_moves": args.max_moves if args.max_moves is not None else DEFAULT_MAX_MOVES.get(args.game, 2048),
         "terminal_passes": default_terminal_passes(args.game),
+        "pass_mode": default_pass_mode(args.game),
         "command_timeout": args.command_timeout,
         "seed": args.seed,
     }
@@ -1238,6 +1262,7 @@ def create_checkpoint_manifest(args, repo_root, executable, config, older, newer
         "num_games": args.games,
         "max_moves": args.max_moves if args.max_moves is not None else DEFAULT_MAX_MOVES.get(args.game, 2048),
         "terminal_passes": default_terminal_passes(args.game),
+        "pass_mode": default_pass_mode(args.game),
         "command_timeout": args.command_timeout,
         "seed": args.seed,
         "self_eval": {
