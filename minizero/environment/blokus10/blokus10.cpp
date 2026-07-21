@@ -341,14 +341,20 @@ PlayerValues Blokus10Env::getEvalScores(bool is_resign /* = false */) const
     PlayerValues values{};
     if (is_resign) {
         const int resigned = playerToIndex(turn_);
-        for (int player = 0; player < kBlokus10NumPlayer; ++player) { values[player] = player == resigned ? -1.0f : 1.0f; }
+        for (int player = 0; player < kBlokus10NumPlayer; ++player) { values[player] = player == resigned ? -1.0f : 1.0f / 3.0f; }
         return values;
     }
+    std::array<float, kBlokus10NumPlayer> scores;
+    float total = 0.0f;
     for (int player = 0; player < kBlokus10NumPlayer; ++player) {
-        const float score = static_cast<float>(getPlayerScore(indexToPlayer(player)));
-        values[player] = 2.0f * (score + static_cast<float>(kBlokus10TotalSquares)) /
-                             static_cast<float>(kBlokus10TotalSquares + 20) -
-                         1.0f;
+        scores[player] = static_cast<float>(getPlayerScore(indexToPlayer(player)));
+        total += scores[player];
+    }
+    // Match Blokus's zero-sum centered score-margin target. Blokus10 scores
+    // range from -29 to +20, so 49 keeps values bounded in [-1, 1].
+    for (int player = 0; player < kBlokus10NumPlayer; ++player) {
+        const float opponent_mean = (total - scores[player]) / 3.0f;
+        values[player] = (scores[player] - opponent_mean) / 49.0f;
     }
     return values;
 }
