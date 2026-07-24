@@ -215,6 +215,7 @@ def load_manifest(path):
         "pass_mode": str(data.get("pass_mode", default_pass_mode(str(data.get("game", "multiplayer"))))),
         "command_timeout": float(data.get("command_timeout", 300)),
         "seed": int(data.get("seed", 0)),
+        "share_agent_engines": bool(data.get("share_agent_engines", False)),
     }
     if config["seat_mode"] not in ("fixed", "cyclic", "all_permutations"):
         raise ValueError("seat_mode must be fixed, cyclic, or all_permutations")
@@ -315,8 +316,12 @@ def result_info(returns):
     return (winners[0], False) if len(winners) == 1 else (None, True)
 
 
+def unique_engines(engines):
+    return list(dict.fromkeys(engines))
+
+
 def play_game(engines, players, max_moves, terminal_passes=1, pass_mode="terminal"):
-    for engine in engines:
+    for engine in unique_engines(engines):
         engine.command_response("clear_board")
 
     moves = []
@@ -349,8 +354,9 @@ def play_game(engines, players, max_moves, terminal_passes=1, pass_mode="termina
             raise RuntimeError(f"reached max_moves={max_moves} without a terminal PASS")
 
         moves.append({"player": players[turn], "action": action})
-        for seat, engine in enumerate(engines):
-            if seat != turn:
+        acting_engine = engines[turn]
+        for engine in unique_engines(engines):
+            if engine is not acting_engine:
                 engine.command_response(f"play {players[turn]} {action}")
         turn = (turn + 1) % len(players)
         while turn in eliminated:
@@ -385,7 +391,11 @@ def run_seating(task, config, output_dir, completed, result_queue, worker_id, gp
     stderr_dir = output_dir / "engine_logs"
     stderr_dir.mkdir(exist_ok=True)
     try:
+        engines_by_agent = {}
         for seat, agent_name in enumerate(seating):
+            if config.get("share_agent_engines") and agent_name in engines_by_agent:
+                engines.append(engines_by_agent[agent_name])
+                continue
             context = {
                 "agent": agent_name,
                 "seat": config["players"][seat],
@@ -396,7 +406,9 @@ def run_seating(task, config, output_dir, completed, result_queue, worker_id, gp
                 "gpu": gpu,
             }
             stderr_path = stderr_dir / f"task_{task.task_id:04d}_seat_{seat + 1}_{safe_name(agent_name)}.log"
-            engines.append(Engine(config["agents"][agent_name], context, config["command_timeout"], stderr_path))
+            engine = Engine(config["agents"][agent_name], context, config["command_timeout"], stderr_path)
+            engines.append(engine)
+            engines_by_agent[agent_name] = engine
 
         for game_index, spec in enumerate(games):
             started = time.monotonic()
@@ -471,7 +483,7 @@ def run_seating(task, config, output_dir, completed, result_queue, worker_id, gp
                 "duration_seconds": 0.0,
             })
     finally:
-        for engine in engines:
+        for engine in unique_engines(engines):
             engine.close()
 
 
@@ -1282,14 +1294,29 @@ def summarize_checkpoint_pair(results_path, older_name, newer_name):
             record = json.loads(line)
             if record.get("error"):
                 errors += 1
-            elif record.get("draw") or record.get("winner_agent") is None:
-                draws += 1
-            elif record["winner_agent"] == newer_name:
-                newer_wins += 1
-            elif record["winner_agent"] == older_name:
-                older_wins += 1
             else:
-                raise ValueError(f"unexpected winner agent: {record['winner_agent']}")
+                returns = record.get("returns", [])
+                seating = record.get("seating", [])
+                if not returns or len(returns) != len(seating):
+                    raise ValueError(f"invalid returns/seating in game {record.get('game_id')}")
+                best_return = max(returns)
+                top_models = {
+                    seating[seat]
+                    for seat, value in enumerate(returns)
+                    if value == best_return
+                }
+                unexpected = top_models - {older_name, newer_name}
+                if unexpected:
+                    raise ValueError(f"unexpected top agent(s): {sorted(unexpected)}")
+                if top_models == {newer_name}:
+                    newer_wins += 1
+                elif top_models == {older_name}:
+                    older_wins += 1
+                else:
+                    # This is a model-level draw only when both checkpoints own
+                    # at least one top seat. Multiple tied seats belonging to the
+                    # same checkpoint are still a win for that checkpoint.
+                    draws += 1
     valid = newer_wins + older_wins + draws
     win_rate = (newer_wins + 0.5 * draws) / valid if valid else float("nan")
     return newer_wins, older_wins, draws, errors, valid, win_rate
@@ -1460,6 +1487,172 @@ def self_eval_main(argv):
     print(f"self-eval summary: {output_dir / 'elo.csv'}")
 
 
+def checkpoint_sweep_main(argv):
+    parser = argparse.ArgumentParser(
+        prog="multiplayer-eval.py checkpoint-sweep",
+        description="Evaluate one fixed reference model against regularly spaced earlier checkpoints.",
+    )
+    parser.add_argument("game", help="MiniZero multiplayer game type")
+    parser.add_argument("training_dir", help="training folder containing model/ and a config")
+    parser.add_argument("--reference", required=True,
+                        help="fixed reference model path, file name, or iteration number")
+    parser.add_argument("--step", type=int, default=1000,
+                        help="training-step spacing between evaluated checkpoints")
+    parser.add_argument("--start", type=int, default=0,
+                        help="first training step to evaluate")
+    parser.add_argument("--end", type=int,
+                        help="last training step to evaluate (default: immediately before reference)")
+    parser.add_argument("--games", type=int, default=200,
+                        help="total seat-balanced games for each reference/checkpoint pair")
+    parser.add_argument("--conf-file", help="evaluation config (default: newest *.cfg in the training folder)")
+    parser.add_argument("-d", "--output", help="result directory")
+    parser.add_argument("--search-type", choices=("maxn", "paranoid"),
+                        help="default: value from config, or maxn")
+    parser.add_argument("--num-players", type=int)
+    parser.add_argument("--num-simulations", type=int)
+    noise_group = parser.add_mutually_exclusive_group()
+    noise_group.add_argument("--noise", dest="noise", action="store_true", help="enable Dirichlet noise")
+    noise_group.add_argument("--no-noise", dest="noise", action="store_false", help="disable Dirichlet noise")
+    parser.set_defaults(noise=False)
+    parser.add_argument(
+        "-conf_str", "--conf-str",
+        dest="conf_str",
+        default=("actor_select_action_by_count=true:"
+                 "actor_select_action_by_softmax_count=false:"
+                 "actor_use_random_rotation_features=false"),
+    )
+    parser.add_argument("--max-moves", type=int)
+    parser.add_argument("--command-timeout", type=float, default=300)
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--omp-num-threads", type=int, default=2)
+    parser.add_argument("--executable", help="engine executable (default: build/GAME/minizero_GAME)")
+    parser.add_argument("-g", "--gpu", help="GPU list, for example 0123 or 0,1,2,3")
+    parser.add_argument("--num_threads", "--num-threads", "--threads",
+                        dest="num_threads", type=int, default=1)
+    resume_mode = parser.add_mutually_exclusive_group()
+    resume_mode.add_argument("--resume", action="store_true")
+    resume_mode.add_argument("--overwrite", action="store_true")
+    parser.add_argument("--dry-run", action="store_true", help="only generate pair arena manifests")
+    args = parser.parse_args(argv)
+    args.game = args.game.lower()
+    if args.num_players is None:
+        args.num_players = 4 if args.game in ("blokus", "blokus10", "blokus15") else 3
+
+    positive = (args.step, args.games, args.num_players, args.command_timeout,
+                args.omp_num_threads, args.num_threads)
+    if any(value <= 0 for value in positive) or args.start < 0:
+        parser.error("step, game, player, timeout, and thread values must be positive; start cannot be negative")
+    if not 2 <= args.num_players <= len(PLAYER_CODES):
+        parser.error(f"--num-players must be between 2 and {len(PLAYER_CODES)}")
+    if args.num_simulations is not None and args.num_simulations <= 0:
+        parser.error("--num-simulations must be positive")
+
+    repo_root = Path(__file__).resolve().parents[1]
+    training_dir = Path(args.training_dir).resolve()
+    if not training_dir.is_dir():
+        parser.error(f"training directory not found: {training_dir}")
+    config = resolve_auto_config(training_dir, args.conf_file)
+    if args.search_type is None:
+        args.search_type = read_config_value(config, "actor_multiplayer_search_type") or "maxn"
+    executable = Path(args.executable).resolve() if args.executable else repo_root / "build" / args.game / f"minizero_{args.game}"
+    if not executable.is_file():
+        parser.error(f"engine executable not found: {executable}; build it before evaluation")
+
+    reference = resolve_auto_model(training_dir, args.reference)
+    reference_iteration = model_iteration(reference)
+    end = reference_iteration - 1 if args.end is None else args.end
+    if end >= reference_iteration:
+        parser.error("--end must be earlier than the reference iteration")
+    if end < args.start:
+        parser.error("--end must be greater than or equal to --start")
+    checkpoints = {
+        model_iteration(path): path
+        for path in find_checkpoints(training_dir)
+    }
+    requested_iterations = list(range(args.start, end + 1, args.step))
+    missing = [iteration for iteration in requested_iterations if iteration not in checkpoints]
+    if missing:
+        preview = ", ".join(map(str, missing[:10]))
+        suffix = " ..." if len(missing) > 10 else ""
+        parser.error(f"missing requested checkpoints: {preview}{suffix}")
+
+    output_dir = (
+        Path(args.output).resolve()
+        if args.output
+        else training_dir / "checkpoint_sweep" / f"reference_{reference_iteration}_step_{args.step}"
+    )
+    output_dir.mkdir(parents=True, exist_ok=True)
+    rows = []
+    for older_iteration in requested_iterations:
+        older = checkpoints[older_iteration]
+        older_name = f"iter_{older_iteration}"
+        reference_name = f"iter_{reference_iteration}"
+        pair_dir = output_dir / f"{reference_iteration}_vs_{older_iteration}"
+        pair_dir.mkdir(parents=True, exist_ok=True)
+        manifest_path = pair_dir / "arena.json"
+        manifest = create_checkpoint_manifest(args, repo_root, executable.resolve(), config, older, reference)
+        manifest["checkpoint_sweep"] = {
+            "reference_iteration": reference_iteration,
+            "comparison_iteration": older_iteration,
+            "step": args.step,
+        }
+        manifest["share_agent_engines"] = True
+        if manifest_path.exists() and not args.overwrite:
+            with manifest_path.open() as stream:
+                previous_manifest = json.load(stream)
+            if previous_manifest != manifest:
+                if not args.resume:
+                    raise ValueError(
+                        f"generated settings differ from existing checkpoint sweep pair: {manifest_path}; "
+                        "use --resume to continue its saved settings or --overwrite to replace it"
+                    )
+                manifest = previous_manifest
+                print(f"reference {reference_iteration} vs {older_iteration}: continuing saved settings", flush=True)
+        if not (args.resume and manifest_path.exists()):
+            with manifest_path.open("w") as stream:
+                json.dump(manifest, stream, indent=2)
+                stream.write("\n")
+        print(f"reference {reference_iteration} vs {older_iteration}: {manifest['num_games']} total games", flush=True)
+        if args.dry_run:
+            continue
+
+        results_path = pair_dir / "games.jsonl"
+        run(argparse.Namespace(
+            manifest=str(manifest_path),
+            output=str(pair_dir),
+            gpu=args.gpu,
+            num_threads=args.num_threads,
+            games_per_seating=None,
+            num_games=None,
+            max_moves=None,
+            resume=results_path.exists() and not args.overwrite,
+            overwrite=args.overwrite,
+        ))
+        reference_wins, older_wins, draws, errors, valid, score = summarize_checkpoint_pair(
+            results_path, older_name, reference_name)
+        rows.append({
+            "reference": reference_iteration,
+            "comparison": older_iteration,
+            "reference_wins": reference_wins,
+            "comparison_wins": older_wins,
+            "draws": draws,
+            "errors": errors,
+            "valid_games": valid,
+            "reference_score": round(score, 6) if valid else "",
+        })
+        write_csv(
+            output_dir / "sweep.csv",
+            ["reference", "comparison", "reference_wins", "comparison_wins",
+             "draws", "errors", "valid_games", "reference_score"],
+            rows,
+        )
+
+    if args.dry_run:
+        print(f"generated {len(requested_iterations)} checkpoint-pair manifests under {output_dir}")
+        return
+    print(f"checkpoint sweep summary: {output_dir / 'sweep.csv'}")
+
+
 def run(args):
     config = load_manifest(args.manifest)
     if args.games_per_seating is not None:
@@ -1551,6 +1744,9 @@ def main():
         return
     if len(sys.argv) > 1 and sys.argv[1] == "self-eval":
         self_eval_main(sys.argv[2:])
+        return
+    if len(sys.argv) > 1 and sys.argv[1] == "checkpoint-sweep":
+        checkpoint_sweep_main(sys.argv[2:])
         return
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("manifest", help="JSON arena manifest")

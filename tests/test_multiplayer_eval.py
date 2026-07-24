@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import csv
+import importlib.util
 import json
 import subprocess
 import sys
@@ -14,7 +15,40 @@ ARENA = REPO_ROOT / "tools" / "multiplayer-eval.py"
 FAKE_ENGINE = REPO_ROOT / "tests" / "fake_multiplayer_engine.py"
 
 
+def load_arena_module():
+    spec = importlib.util.spec_from_file_location("multiplayer_eval_under_test", ARENA)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 class MultiplayerEvalTest(unittest.TestCase):
+    def test_checkpoint_summary_treats_same_model_top_seats_as_a_win(self):
+        arena = load_arena_module()
+        records = [
+            {
+                "game_id": 0,
+                "error": None,
+                "returns": [1.0, 1.0, 0.0, -1.0],
+                "seating": ["new", "new", "old", "old"],
+            },
+            {
+                "game_id": 1,
+                "error": None,
+                "returns": [1.0, 1.0, 0.0, -1.0],
+                "seating": ["new", "old", "new", "old"],
+            },
+        ]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            results = Path(temp_dir) / "games.jsonl"
+            results.write_text("".join(json.dumps(record) + "\n" for record in records))
+            new_wins, old_wins, draws, errors, valid, score = arena.summarize_checkpoint_pair(
+                results, "old", "new"
+            )
+        self.assertEqual((new_wins, old_wins, draws, errors, valid), (1, 0, 1, 0, 2))
+        self.assertEqual(score, 0.75)
+
     def test_blokus_elimination_passes_skip_players_and_end_after_four(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp = Path(temp_dir)
@@ -128,6 +162,72 @@ class MultiplayerEvalTest(unittest.TestCase):
             self.assertEqual([(row["P1"], row["P2"]) for row in rows], [("500", "0"), ("1000", "500")])
             self.assertTrue(all(int(row["Total"]) == 10 for row in rows))
             self.assertTrue(all(float(row["WinRate"]) == 0.5 for row in rows))
+
+    def test_checkpoint_sweep_uses_fixed_reference_and_training_step_spacing(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            training = temp / "connect3x3_run"
+            model_dir = training / "model"
+            model_dir.mkdir(parents=True)
+            config = training / "run.cfg"
+            config.write_text("actor_num_simulation=50\nactor_multiplayer_search_type=maxn\n")
+            for iteration in (0, 500, 1000, 1500, 2000):
+                (model_dir / f"weight_iter_{iteration}.pt").touch()
+            output = training / "checkpoint_sweep"
+
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(ARENA),
+                    "checkpoint-sweep",
+                    "connect3x3",
+                    str(training),
+                    "--reference",
+                    "2000",
+                    "--step",
+                    "1000",
+                    "--games",
+                    "10",
+                    "--no-noise",
+                    "--executable",
+                    str(FAKE_ENGINE),
+                    "--output",
+                    str(output),
+                    "--num_threads",
+                    "2",
+                ],
+                cwd=REPO_ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            pair_names = ("2000_vs_0", "2000_vs_1000")
+            self.assertEqual(
+                sorted(path.name for path in output.iterdir() if path.is_dir()),
+                list(pair_names),
+            )
+            for pair_name in pair_names:
+                pair_dir = output / pair_name
+                manifest = json.loads((pair_dir / "arena.json").read_text())
+                self.assertEqual(manifest["num_games"], 10)
+                self.assertEqual(manifest["checkpoint_sweep"]["reference_iteration"], 2000)
+                self.assertTrue(manifest["share_agent_engines"])
+                self.assertEqual(len((pair_dir / "games.jsonl").read_text().splitlines()), 10)
+                agents = {agent["name"]: agent for agent in manifest["agents"]}
+                self.assertIn("weight_iter_2000.pt", agents["iter_2000"]["command"][-1])
+                self.assertNotIn("actor_use_dirichlet_noise=true", agents["iter_2000"]["command"][-1])
+                self.assertIn("actor_select_action_by_count=true", agents["iter_2000"]["command"][-1])
+                # Six unique seatings, with one shared engine per checkpoint instead of per seat.
+                self.assertEqual(len(list((pair_dir / "engine_logs").glob("*.log"))), 12)
+
+            with (output / "sweep.csv").open() as stream:
+                rows = list(csv.DictReader(stream))
+            self.assertEqual(
+                [(row["reference"], row["comparison"]) for row in rows],
+                [("2000", "0"), ("2000", "1000")],
+            )
+            self.assertTrue(all(int(row["valid_games"]) == 10 for row in rows))
 
     def test_auto_mode_accepts_different_models_and_configs(self):
         with tempfile.TemporaryDirectory() as temp_dir:
