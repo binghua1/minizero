@@ -9,6 +9,7 @@ target_include_directories(
     atari
     blokus
     blokus10
+    blokus15
     breakthrough
     clobber
     conhex

@@ -511,7 +511,7 @@ elif [[ $mode == self-eval ]]; then # ================================ SELF-EVAL
     eval_start_index=${eval_start_index:=0}
     eval_folder_name=${eval_folder_name:=self_eval}
     num_threads=${num_threads:=2}
-    if [[ $game == tictacmo || $game == connect3x3 || $game == go3 || $game == blokus || $game == blokus10 ]]; then
+    if [[ $game == tictacmo || $game == connect3x3 || $game == go3 || $game == blokus || $game == blokus10 || $game == blokus15 ]]; then
         multiplayer_self_eval=true
         opts=(
             --conf-file "$conf_file"

@@ -22,6 +22,11 @@ typedef minizero::env::blokus::BlokusEnvLoader EnvironmentLoader;
 typedef minizero::env::blokus10::Blokus10Action Action;
 typedef minizero::env::blokus10::Blokus10Env Environment;
 typedef minizero::env::blokus10::Blokus10EnvLoader EnvironmentLoader;
+#elif BLOKUS15
+#include "blokus15.h"
+typedef minizero::env::blokus15::Blokus15Action Action;
+typedef minizero::env::blokus15::Blokus15Env Environment;
+typedef minizero::env::blokus15::Blokus15EnvLoader EnvironmentLoader;
 #elif BREAKTHROUGH
 #include "breakthrough.h"
 typedef minizero::env::breakthrough::BreakthroughAction Action;

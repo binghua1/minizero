@@ -20,7 +20,7 @@ from pathlib import Path
 
 
 PLAYER_CODES = ("b", "w", "r", "g", "y", "p")
-DEFAULT_MAX_MOVES = {"tictacmo": 15, "connect3x3": 42, "go3": 400, "blokus": 400, "blokus10": 160}
+DEFAULT_MAX_MOVES = {"tictacmo": 15, "connect3x3": 42, "go3": 400, "blokus": 400, "blokus10": 160, "blokus15": 220}
 DEFAULT_EVAL_OVERRIDES = {
     "actor_use_gumbel": "false",
     "actor_use_gumbel_noise": "false",
@@ -42,7 +42,7 @@ MULTIPLAYER_SELF_EVAL_OVERRIDES = {
 
 
 def default_terminal_passes(game):
-    if game in ("blokus", "blokus10"):
+    if game in ("blokus", "blokus10", "blokus15"):
         return 4
     if game == "go3":
         return 3
@@ -50,7 +50,7 @@ def default_terminal_passes(game):
 
 
 def default_pass_mode(game):
-    if game in ("blokus", "blokus10"):
+    if game in ("blokus", "blokus10", "blokus15"):
         return "elimination"
     if game == "go3":
         return "consecutive"
@@ -1092,7 +1092,7 @@ def auto_main(argv):
     args = parser.parse_args(argv)
     args.game = args.game.lower()
     if args.num_players is None:
-        args.num_players = 4 if args.game in ("blokus", "blokus10") else 3
+        args.num_players = 4 if args.game in ("blokus", "blokus10", "blokus15") else 3
 
     if not 2 <= args.num_players <= len(PLAYER_CODES):
         parser.error(f"--num-players must be between 2 and {len(PLAYER_CODES)}")
@@ -1357,7 +1357,7 @@ def self_eval_main(argv):
     args = parser.parse_args(argv)
     args.game = args.game.lower()
     if args.num_players is None:
-        args.num_players = 4 if args.game in ("blokus", "blokus10") else 3
+        args.num_players = 4 if args.game in ("blokus", "blokus10", "blokus15") else 3
 
     positive = (args.interval, args.games, args.num_players, args.command_timeout,
                 args.omp_num_threads, args.num_threads)
