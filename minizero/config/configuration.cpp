@@ -64,6 +64,7 @@ float learner_learning_rate = 0.02;
 float learner_momentum = 0.9;
 float learner_weight_decay = 0.0001;
 float learner_value_loss_scale = 1.0f;
+float learner_progress_loss_scale = 0.0f;
 int learner_num_thread = 8;
 
 // network parameters
@@ -152,6 +153,7 @@ void setConfiguration(ConfigureLoader& cl)
     cl.addParameter("learner_momentum", learner_momentum, "hyperparameter for momentum; only for sgd", "Learner");
     cl.addParameter("learner_weight_decay", learner_weight_decay, "hyperparameter for weight decay; usually 0.0001 for sgd, 0 for adam, 0.01 for adamw", "Learner");
     cl.addParameter("learner_value_loss_scale", learner_value_loss_scale, "hyperparameter for scaling of the value loss", "Learner");
+    cl.addParameter("learner_progress_loss_scale", learner_progress_loss_scale, "hyperparameter for scaling of the Blokus10 final-placement auxiliary loss", "Learner");
     cl.addParameter("learner_num_thread", learner_num_thread, "the number of threads for training", "Learner");
 
     // network parameters

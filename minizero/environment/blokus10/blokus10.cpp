@@ -436,11 +436,40 @@ void Blokus10EnvLoader::loadFromEnvironment(const Blokus10Env& env, const std::v
 {
     BaseEnvLoader<Blokus10Action, Blokus10Env>::loadFromEnvironment(env, action_info_history);
     addTag("RE", playerValuesToString(env.getEvalScores(), kBlokus10NumPlayer));
+    PlayerValues scores{};
+    for (int player = 0; player < kBlokus10NumPlayer; ++player) {
+        scores[player] = static_cast<float>(env.getPlayerScore(indexToPlayer(player)));
+    }
+    addTag("SC", playerValuesToString(scores, kBlokus10NumPlayer));
 }
 
 std::vector<float> Blokus10EnvLoader::getValue(const int pos) const
 {
     return playerValuesToVector(stringToPlayerValues(getTag("RE"), kBlokus10NumPlayer), kBlokus10NumPlayer);
+}
+
+std::vector<float> Blokus10EnvLoader::getProgress(const int /* pos */) const
+{
+    PlayerValues scores{};
+    const std::string score_tag = getTag("SC");
+    if (!score_tag.empty()) {
+        scores = stringToPlayerValues(score_tag, kBlokus10NumPlayer);
+    } else {
+        const PlayerValues values = stringToPlayerValues(getTag("RE"), kBlokus10NumPlayer);
+        for (int player = 0; player < kBlokus10NumPlayer; ++player) {
+            scores[player] = ((values[player] + 1.0f) * static_cast<float>(kBlokus10TotalSquares + 20) / 2.0f) -
+                             static_cast<float>(kBlokus10TotalSquares);
+        }
+    }
+
+    std::vector<float> progress;
+    progress.reserve(kBlokus10NumPlayer);
+    for (int player = 0; player < kBlokus10NumPlayer; ++player) {
+        const float placed = scores[player] < 0.0f ? static_cast<float>(kBlokus10TotalSquares) + scores[player]
+                                                   : static_cast<float>(kBlokus10TotalSquares);
+        progress.push_back(std::clamp(placed / static_cast<float>(kBlokus10TotalSquares), 0.0f, 1.0f));
+    }
+    return progress;
 }
 
 std::vector<float> Blokus10EnvLoader::getActionFeatures(const int pos, utils::Rotation rotation /* = utils::Rotation::kRotationNone */) const

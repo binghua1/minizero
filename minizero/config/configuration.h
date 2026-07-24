@@ -66,6 +66,7 @@ extern float learner_learning_rate;
 extern float learner_momentum;
 extern float learner_weight_decay;
 extern float learner_value_loss_scale;
+extern float learner_progress_loss_scale;
 extern int learner_num_thread;
 
 // network parameters

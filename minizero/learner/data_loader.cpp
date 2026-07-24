@@ -145,6 +145,7 @@ void DataLoaderThread::setAlphaZeroTrainingData(int batch_index)
     std::vector<float> features = env_loader.getFeatures(pos, rotation);
     std::vector<float> policy = env_loader.getPolicy(pos, rotation);
     std::vector<float> value = env_loader.getValue(pos);
+    std::vector<float> progress = env_loader.getProgress(pos);
 
     // write data to data_ptr
     getSharedData()->getDataPtr()->loss_scale_[batch_index] = loss_scale;
@@ -153,6 +154,7 @@ void DataLoaderThread::setAlphaZeroTrainingData(int batch_index)
     std::copy(features.begin(), features.end(), getSharedData()->getDataPtr()->features_ + features.size() * batch_index);
     std::copy(policy.begin(), policy.end(), getSharedData()->getDataPtr()->policy_ + policy.size() * batch_index);
     std::copy(value.begin(), value.end(), getSharedData()->getDataPtr()->value_ + value.size() * batch_index);
+    std::copy(progress.begin(), progress.end(), getSharedData()->getDataPtr()->progress_ + progress.size() * batch_index);
 }
 
 void DataLoaderThread::setMuZeroTrainingData(int batch_index)

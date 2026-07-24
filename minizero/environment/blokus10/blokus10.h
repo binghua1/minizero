@@ -102,6 +102,7 @@ class Blokus10EnvLoader : public BaseEnvLoader<Blokus10Action, Blokus10Env> {
 public:
     void loadFromEnvironment(const Blokus10Env& env, const std::vector<std::vector<std::pair<std::string, std::string>>>& action_info_history = {}) override;
     std::vector<float> getValue(const int pos) const override;
+    std::vector<float> getProgress(const int pos) const override;
     std::vector<float> getActionFeatures(const int pos, utils::Rotation rotation = utils::Rotation::kRotationNone) const override;
     inline std::string name() const override { return kBlokus10Name; }
     inline int getPolicySize() const override { return kBlokus10PolicySize; }

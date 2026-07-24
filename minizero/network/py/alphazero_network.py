@@ -42,6 +42,9 @@ class AlphaZeroNetwork(nn.Module):
             self.value = ValueNetwork(num_hidden_channels, hidden_channel_height, hidden_channel_width, num_value_hidden_channels, value_output_size)
         else:
             self.value = DiscreteValueNetwork(num_hidden_channels, hidden_channel_height, hidden_channel_width, num_value_hidden_channels, discrete_value_size)
+        self.use_progress_head = game_name == "blokus10" and self.discrete_value_size == 1 and num_players > 2
+        if self.use_progress_head:
+            self.progress = ValueNetwork(num_hidden_channels, hidden_channel_height, hidden_channel_width, num_value_hidden_channels, num_players)
 
     @torch.jit.export
     def get_type_name(self):
@@ -109,9 +112,12 @@ class AlphaZeroNetwork(nn.Module):
         # value
         if self.discrete_value_size == 1:
             value = self.value(x)
-            return {"policy_logit": policy_logit,
-                    "policy": policy,
-                    "value": value}
+            output = {"policy_logit": policy_logit,
+                      "policy": policy,
+                      "value": value}
+            if self.use_progress_head:
+                output["progress"] = (self.progress(x) + 1.0) / 2.0
+            return output
         else:
             value_logit = self.value(x)
             value = torch.softmax(value_logit, dim=1)
