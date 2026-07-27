@@ -383,10 +383,10 @@ def write_sgf(path, game, game_name):
 
 
 def run_seating(task, config, output_dir, completed, result_queue, worker_id, gpu):
-    games = [game for game in task.games if game.game_id not in completed]
-    if not games:
+    pending_games = [game for game in task.games if game.game_id not in completed]
+    if not pending_games:
         return
-    seating = games[0].seating
+    seating = task.games[0].seating
     engines = []
     stderr_dir = output_dir / "engine_logs"
     stderr_dir.mkdir(exist_ok=True)
@@ -410,7 +410,21 @@ def run_seating(task, config, output_dir, completed, result_queue, worker_id, gp
             engines.append(engine)
             engines_by_agent[agent_name] = engine
 
-        for game_index, spec in enumerate(games):
+        for game_index, spec in enumerate(task.games):
+            if spec.game_id in completed:
+                # Engines stay alive for every repeat of one seating, so their
+                # RNG streams also span those repeats. Replaying completed
+                # games after a restart restores the exact RNG position before
+                # continuing; otherwise --resume would duplicate early random
+                # trajectories from the same seating.
+                play_game(
+                    engines,
+                    config["players"],
+                    config["max_moves"],
+                    config.get("terminal_passes", 1),
+                    config.get("pass_mode", "terminal"),
+                )
+                continue
             started = time.monotonic()
             record = {
                 "game_id": spec.game_id,
@@ -448,7 +462,9 @@ def run_seating(task, config, output_dir, completed, result_queue, worker_id, gp
             result_queue.put(record)
             if record["error"]:
                 abort_error = f"seating aborted after game {spec.game_id}: {record['error']}"
-                for remaining in games[game_index + 1:]:
+                for remaining in task.games[game_index + 1:]:
+                    if remaining.game_id in completed:
+                        continue
                     result_queue.put({
                         "game_id": remaining.game_id,
                         "lineup_id": remaining.lineup_id,
@@ -466,7 +482,7 @@ def run_seating(task, config, output_dir, completed, result_queue, worker_id, gp
                     })
                 break
     except Exception as exc:
-        for spec in games:
+        for spec in pending_games:
             result_queue.put({
                 "game_id": spec.game_id,
                 "lineup_id": spec.lineup_id,

@@ -3,6 +3,7 @@
 import csv
 import importlib.util
 import json
+import queue
 import subprocess
 import sys
 import tempfile
@@ -24,6 +25,54 @@ def load_arena_module():
 
 
 class MultiplayerEvalTest(unittest.TestCase):
+    def test_resume_replays_completed_games_to_restore_engine_rng_state(self):
+        arena = load_arena_module()
+        calls = []
+
+        class FakeEngine:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def close(self):
+                pass
+
+        def fake_play_game(*args, **kwargs):
+            calls.append(len(calls) + 1)
+            value = float(calls[-1])
+            return [], [value, -value], 0, False
+
+        original_engine = arena.Engine
+        original_play_game = arena.play_game
+        arena.Engine = FakeEngine
+        arena.play_game = fake_play_game
+        try:
+            task = arena.SeatingTask(0, (
+                arena.GameSpec(0, 0, 0, 0, ("new", "old")),
+                arena.GameSpec(1, 0, 0, 1, ("new", "old")),
+            ))
+            config = {
+                "agents": {"new": {}, "old": {}},
+                "players": ["b", "w"],
+                "command_timeout": 1,
+                "max_moves": 10,
+                "game": "fake",
+                "seed": 0,
+                "share_agent_engines": True,
+            }
+            results = queue.Queue()
+            with tempfile.TemporaryDirectory() as temp_dir:
+                output = Path(temp_dir)
+                (output / "sgf").mkdir()
+                arena.run_seating(task, config, output, {0}, results, 0, "")
+            resumed = results.get_nowait()
+        finally:
+            arena.Engine = original_engine
+            arena.play_game = original_play_game
+
+        self.assertEqual(calls, [1, 2])
+        self.assertEqual(resumed["game_id"], 1)
+        self.assertEqual(resumed["returns"], [2.0, -2.0])
+
     def test_checkpoint_summary_treats_same_model_top_seats_as_a_win(self):
         arena = load_arena_module()
         records = [
