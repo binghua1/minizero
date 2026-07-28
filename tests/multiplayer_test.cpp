@@ -2,6 +2,7 @@
 #include "tictacmo.h"
 #include "zero_server.h"
 #include <cassert>
+#include <cmath>
 #include <vector>
 
 int main()
@@ -91,6 +92,23 @@ int main()
     assert(maxn_high_player2_value->getMean() == 0.9f);
     assert(maxn_low_player2_value->getMean() == 0.1f);
     assert(maxn_selection_mcts.selectFromNode(maxn_selection_player1_edge).back() == maxn_high_player2_value);
+
+    MCTS hybrid_mcts(4);
+    hybrid_mcts.reset();
+    hybrid_mcts.setRootPlayer(Player::kPlayer1);
+    hybrid_mcts.setMultiplayerSearchType(MCTS::MultiplayerSearchType::kHybrid);
+    hybrid_mcts.setMultiplayerParanoidWeight(0.25f);
+    MCTSNode* hybrid_root = hybrid_mcts.getRootNode();
+    hybrid_mcts.expand(hybrid_root, {{Action(0, Player::kPlayer1), 1.0f, 0.0f}});
+    MCTSNode* hybrid_player1_edge = hybrid_root->getChild(0);
+    hybrid_mcts.expand(hybrid_player1_edge, {{Action(1, Player::kPlayer2), 1.0f, 0.0f}});
+    MCTSNode* hybrid_player2_edge = hybrid_player1_edge->getChild(0);
+    hybrid_mcts.backup(
+        {hybrid_root, hybrid_player1_edge, hybrid_player2_edge},
+        PlayerValues{0.8f, 0.9f, -0.5f});
+    assert(std::abs(hybrid_root->getMean() - 0.8f) < 1e-6f);
+    assert(std::abs(hybrid_player1_edge->getMean() - 0.8f) < 1e-6f);
+    assert(std::abs(hybrid_player2_edge->getMean() - 0.475f) < 1e-6f);
 
     MCTS scalar_two_player_mcts(4);
     scalar_two_player_mcts.reset();

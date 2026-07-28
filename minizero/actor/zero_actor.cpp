@@ -36,7 +36,10 @@ void ZeroActor::resetSearch()
     getMCTS()->setMultiplayerSearchType(
         config::actor_multiplayer_search_type == "paranoid"
             ? MCTS::MultiplayerSearchType::kParanoid
-            : MCTS::MultiplayerSearchType::kMaxN);
+            : config::actor_multiplayer_search_type == "hybrid"
+                  ? MCTS::MultiplayerSearchType::kHybrid
+                  : MCTS::MultiplayerSearchType::kMaxN);
+    getMCTS()->setMultiplayerParanoidWeight(config::actor_multiplayer_paranoid_weight);
     getMCTS()->getRootNode()->setAction(Action(-1, env::getPreviousPlayer(env_.getTurn(), env_.getNumPlayer())));
 }
 
@@ -128,8 +131,13 @@ void ZeroActor::setNetwork(const std::shared_ptr<network::Network>& network)
     assert((alphazero_network_ && !muzero_network_) || (!alphazero_network_ && muzero_network_));
 
     if (env_.getNumPlayer() > 2) {
-        if (config::actor_multiplayer_search_type != "maxn" && config::actor_multiplayer_search_type != "paranoid") {
-            throw std::runtime_error("multiplayer search type must be maxn or paranoid");
+        if (config::actor_multiplayer_search_type != "maxn" &&
+            config::actor_multiplayer_search_type != "paranoid" &&
+            config::actor_multiplayer_search_type != "hybrid") {
+            throw std::runtime_error("multiplayer search type must be maxn, paranoid, or hybrid");
+        }
+        if (config::actor_multiplayer_paranoid_weight < 0.0f || config::actor_multiplayer_paranoid_weight > 1.0f) {
+            throw std::runtime_error("multiplayer Paranoid weight must be between 0 and 1");
         }
         if (!alphazero_network_) { throw std::runtime_error("multiplayer environments currently support AlphaZero only"); }
         if (network->getNumPlayers() != env_.getNumPlayer()) { throw std::runtime_error("network and environment player counts do not match"); }

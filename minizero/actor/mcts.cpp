@@ -83,6 +83,7 @@ void MCTS::reset()
     tree_value_bound_.clear();
     root_player_ = env::Player::kPlayerNone;
     multiplayer_search_type_ = MultiplayerSearchType::kMaxN;
+    multiplayer_paranoid_weight_ = 0.5f;
     use_player_value_backup_ = false;
 }
 
@@ -196,6 +197,12 @@ void MCTS::backup(const std::vector<MCTSNode*>& node_path, const env::PlayerValu
         if (multiplayer_search_type_ == MultiplayerSearchType::kParanoid) {
             const float root_value = values[env::playerToIndex(root_player_)];
             value = (action_player == root_player_ ? root_value : -root_value);
+        } else if (multiplayer_search_type_ == MultiplayerSearchType::kHybrid) {
+            const float maxn_value = values[env::playerToIndex(action_player)];
+            const float root_value = values[env::playerToIndex(root_player_)];
+            const float paranoid_value = (action_player == root_player_ ? root_value : -root_value);
+            value = (1.0f - multiplayer_paranoid_weight_) * maxn_value +
+                    multiplayer_paranoid_weight_ * paranoid_value;
         } else {
             value = values[env::playerToIndex(action_player)];
         }

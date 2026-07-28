@@ -77,6 +77,7 @@ public:
     enum class MultiplayerSearchType {
         kMaxN,
         kParanoid,
+        kHybrid,
     };
 
     class ActionCandidate {
@@ -115,6 +116,8 @@ public:
     inline env::Player getRootPlayer() const { return root_player_; }
     inline void setMultiplayerSearchType(MultiplayerSearchType search_type) { multiplayer_search_type_ = search_type; }
     inline MultiplayerSearchType getMultiplayerSearchType() const { return multiplayer_search_type_; }
+    inline void setMultiplayerParanoidWeight(float weight) { multiplayer_paranoid_weight_ = weight; }
+    inline float getMultiplayerParanoidWeight() const { return multiplayer_paranoid_weight_; }
     inline bool usePlayerValueBackup() const { return use_player_value_backup_; }
 
 protected:
@@ -129,6 +132,7 @@ protected:
     TreeHiddenStateData tree_hidden_state_data_;
     env::Player root_player_;
     MultiplayerSearchType multiplayer_search_type_;
+    float multiplayer_paranoid_weight_;
     bool use_player_value_backup_;
 };
 

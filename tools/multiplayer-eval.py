@@ -852,6 +852,8 @@ def create_auto_manifest(args, repo_root, models, configs, executable):
             "program_auto_seed": "false",
             **overrides,
         }
+        if search_type == "hybrid" and args.hybrid_weight is not None:
+            agent_overrides["actor_multiplayer_paranoid_weight"] = str(args.hybrid_weight)
         conf_str = ":".join(f"{key}={value}" for key, value in agent_overrides.items())
         agents.append({
             "name": search_type,
@@ -1098,12 +1100,15 @@ def auto_main(argv):
     parser.add_argument("--model", help="model path, file name, or iteration number (default: latest iteration)")
     parser.add_argument("--maxn-model", help="model used by the MaxN agent (default: --model)")
     parser.add_argument("--paranoid-model", help="model used by the Paranoid agent (default: --model)")
+    parser.add_argument("--hybrid-model", help="model used by the Hybrid agent (default: --model)")
     parser.add_argument("--conf-file", help="config path (default: newest *.cfg in the training folder)")
     parser.add_argument("--maxn-conf-file", help="config used by the MaxN agent")
     parser.add_argument("--paranoid-conf-file", help="config used by the Paranoid agent")
+    parser.add_argument("--hybrid-conf-file", help="config used by the Hybrid agent")
     parser.add_argument("--executable", help="engine executable (default: build/GAME/minizero_GAME)")
     parser.add_argument("--output", help="output directory (default: TRAINING_DIR/evaluation/MODEL_SEARCHES)")
-    parser.add_argument("--search-types", nargs="+", default=["maxn", "paranoid"], choices=("maxn", "paranoid"))
+    parser.add_argument("--search-types", nargs="+", default=["maxn", "paranoid"], choices=("maxn", "paranoid", "hybrid"))
+    parser.add_argument("--hybrid-weight", type=float, help="Paranoid contribution for the Hybrid agent; 0 is MaxN and 1 is Paranoid")
     parser.add_argument("--num-players", type=int)
     parser.add_argument("--num-simulations", type=int, help="override actor_num_simulation")
     parser.add_argument("--noise", action="store_true", help="enable Dirichlet noise for varied reproducible games")
@@ -1129,6 +1134,8 @@ def auto_main(argv):
     positive = (args.games_per_seating, args.command_timeout, args.omp_num_threads, args.num_threads)
     if any(value <= 0 for value in positive) or (args.num_simulations is not None and args.num_simulations <= 0):
         parser.error("game, timeout, thread, and simulation counts must be positive")
+    if args.hybrid_weight is not None and not 0.0 <= args.hybrid_weight <= 1.0:
+        parser.error("--hybrid-weight must be between 0 and 1")
 
     repo_root = Path(__file__).resolve().parents[1]
     training_dir = Path(args.training_dir).resolve()
@@ -1161,6 +1168,11 @@ def auto_main(argv):
         parser.error("agent configs use different actor_num_simulation values; set --num-simulations explicitly")
     effective_simulations = args.num_simulations or (next(iter(config_simulations)) if config_simulations else None)
     simulation_label = f"_n{effective_simulations}" if effective_simulations else ""
+    effective_hybrid_weight = args.hybrid_weight
+    if effective_hybrid_weight is None and "hybrid" in args.search_types:
+        config_weight = read_config_value(configs["hybrid"], "actor_multiplayer_paranoid_weight")
+        effective_hybrid_weight = float(config_weight) if config_weight is not None else 0.5
+    hybrid_label = f"_a{effective_hybrid_weight:g}" if effective_hybrid_weight is not None else ""
     noise_label = "_noise" if args.noise else ""
     if len(set(models.values())) == 1:
         arena_label = f"{next(iter(models.values())).stem}_{search_label}"
@@ -1174,7 +1186,7 @@ def auto_main(argv):
     output_dir = (
         Path(args.output).resolve()
         if args.output
-        else training_dir / "evaluation" / f"{arena_label}{simulation_label}{noise_label}"
+        else training_dir / "evaluation" / f"{arena_label}{simulation_label}{hybrid_label}{noise_label}"
     )
     output_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = output_dir / "arena.json"
