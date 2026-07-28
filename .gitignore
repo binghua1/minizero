@@ -14,3 +14,15 @@ __pycache__
 # others
 .vscode
 .container_root
+
+# Local experiment outputs and helper scripts (not source-controlled)
+local_tools/
+blokus10_maxn_01/
+blokus10_maxn_02_val/
+blokus_maxn_smoke_01/
+blokus_maxn_smoke_02/
+connect3x3_maxn_smoke_01/
+go_5x5_az/
+tictacmo_cdaz_cross_eval/
+tictacmo_maxn_smoke_01/
+tictacmo_maxn_smoke_02/
