@@ -20,6 +20,8 @@ bool actor_mcts_value_rescale = false;
 char actor_mcts_value_flipping_player = 'W';
 std::string actor_multiplayer_search_type = "maxn";
 float actor_rank_utility_weight = 0.0f;
+float actor_rank_adaptive_gap_threshold = 0.2f;
+float actor_rank_adaptive_gap_scale = 12.0f;
 bool actor_select_action_by_count = false;
 bool actor_select_action_by_softmax_count = true;
 float actor_select_action_softmax_temperature = 1.0f;
@@ -108,8 +110,10 @@ void setConfiguration(ConfigureLoader& cl)
     cl.addParameter("actor_mcts_value_rescale", actor_mcts_value_rescale, "true for games whose rewards are not bounded in [-1, 1], e.g., Atari games", "Actor");             // ref: MZ
     cl.addParameter("actor_mcts_think_batch_size", actor_mcts_think_batch_size, "the MCTS selection batch size; only works when running console", "Actor");
     cl.addParameter("actor_mcts_think_time_limit", actor_mcts_think_time_limit, "the MCTS time limit in seconds, 0 represents disabling time limit (only uses actor_num_simulation); only works when running console", "Actor");
-    cl.addParameter("actor_multiplayer_search_type", actor_multiplayer_search_type, "the multiplayer tree-search backup type: maxn, paranoid, or rank (MaxN with rank utility)", "Actor");
-    cl.addParameter("actor_rank_utility_weight", actor_rank_utility_weight, "weight for mixing multiplayer absolute value with rank value during search; 0 uses only absolute value and 1 uses only rank", "Actor");
+    cl.addParameter("actor_multiplayer_search_type", actor_multiplayer_search_type, "the multiplayer tree-search backup type: maxn, paranoid, rank, or rank_adaptive", "Actor");
+    cl.addParameter("actor_rank_utility_weight", actor_rank_utility_weight, "fixed rank weight for rank search, or maximum rank weight for rank_adaptive search; 0 uses only absolute value and 1 uses only rank", "Actor");
+    cl.addParameter("actor_rank_adaptive_gap_threshold", actor_rank_adaptive_gap_threshold, "value-gap threshold tau for rank_adaptive search; larger values delay rank utility activation", "Actor");
+    cl.addParameter("actor_rank_adaptive_gap_scale", actor_rank_adaptive_gap_scale, "sigmoid scale k for rank_adaptive search; larger values make rank utility activation sharper", "Actor");
     cl.addParameter("actor_select_action_by_count", actor_select_action_by_count, "true for selecting the action by the maximum MCTS count; should not be true together with actor_select_action_by_softmax_count", "Actor");
     cl.addParameter("actor_select_action_by_softmax_count", actor_select_action_by_softmax_count, "true for selecting the action by the propotion of MCTS count; should not be true together with actor_select_action_by_count", "Actor");
     cl.addParameter("actor_select_action_softmax_temperature", actor_select_action_softmax_temperature, "the softmax temperature when using actor_select_action_by_softmax_count", "Actor");

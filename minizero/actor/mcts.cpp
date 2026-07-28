@@ -214,6 +214,32 @@ void MCTS::backup(const std::vector<MCTSNode*>& node_path, const env::PlayerValu
     backup(node_path, utilities);
 }
 
+void MCTS::backupAdaptiveRankUtility(const std::vector<MCTSNode*>& node_path,
+                                     const env::PlayerValues& values,
+                                     const env::PlayerValues& rank_values,
+                                     int num_players,
+                                     float max_rank_weight,
+                                     float gap_threshold,
+                                     float gap_scale)
+{
+    assert(num_players > 1 && num_players <= env::kMaxNumPlayers);
+    assert(max_rank_weight >= 0.0f && max_rank_weight <= 1.0f);
+    assert(gap_scale > 0.0f);
+
+    float max_value = values[0];
+    for (int player = 1; player < num_players; ++player) {
+        max_value = std::max(max_value, values[player]);
+    }
+
+    env::PlayerValues utilities{};
+    for (int player = 0; player < num_players; ++player) {
+        const float gap = max_value - values[player];
+        const float rank_weight = max_rank_weight / (1.0f + std::exp(-gap_scale * (gap - gap_threshold)));
+        utilities[player] = (1.0f - rank_weight) * values[player] + rank_weight * rank_values[player];
+    }
+    backup(node_path, utilities);
+}
+
 MCTSNode* MCTS::selectChildByPUCTScore(const MCTSNode* node) const
 {
     assert(node && !node->isLeaf());

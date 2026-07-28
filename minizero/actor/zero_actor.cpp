@@ -123,7 +123,7 @@ void ZeroActor::afterNNEvaluation(const std::shared_ptr<NetworkOutput>& network_
             std::copy(alphazero_output->values_.begin(),
                       alphazero_output->values_.begin() + env_transition.getNumPlayer(),
                       values.begin());
-            if (config::actor_rank_utility_weight > 0.0f) {
+            if (config::actor_multiplayer_search_type == "rank" || config::actor_multiplayer_search_type == "rank_adaptive") {
                 if (!alphazero_output->has_rank_) {
                     throw std::runtime_error("rank utility search requires a model with a rank output");
                 }
@@ -131,18 +131,37 @@ void ZeroActor::afterNNEvaluation(const std::shared_ptr<NetworkOutput>& network_
                 std::copy(alphazero_output->rank_values_.begin(),
                           alphazero_output->rank_values_.begin() + env_transition.getNumPlayer(),
                           rank_values.begin());
-                getMCTS()->backup(node_path, values, rank_values, config::actor_rank_utility_weight);
+                if (config::actor_multiplayer_search_type == "rank_adaptive") {
+                    getMCTS()->backupAdaptiveRankUtility(
+                        node_path,
+                        values,
+                        rank_values,
+                        env_transition.getNumPlayer(),
+                        config::actor_rank_utility_weight,
+                        config::actor_rank_adaptive_gap_threshold,
+                        config::actor_rank_adaptive_gap_scale);
+                } else {
+                    getMCTS()->backup(node_path, values, rank_values, config::actor_rank_utility_weight);
+                }
             } else {
                 getMCTS()->backup(node_path, values);
             }
         } else {
             const env::PlayerValues values = env_transition.getEvalScores();
-            if (config::actor_rank_utility_weight > 0.0f) {
-                getMCTS()->backup(
-                    node_path,
-                    values,
-                    calculateRankValues(values, env_transition.getNumPlayer()),
-                    config::actor_rank_utility_weight);
+            if (config::actor_multiplayer_search_type == "rank" || config::actor_multiplayer_search_type == "rank_adaptive") {
+                const env::PlayerValues rank_values = calculateRankValues(values, env_transition.getNumPlayer());
+                if (config::actor_multiplayer_search_type == "rank_adaptive") {
+                    getMCTS()->backupAdaptiveRankUtility(
+                        node_path,
+                        values,
+                        rank_values,
+                        env_transition.getNumPlayer(),
+                        config::actor_rank_utility_weight,
+                        config::actor_rank_adaptive_gap_threshold,
+                        config::actor_rank_adaptive_gap_scale);
+                } else {
+                    getMCTS()->backup(node_path, values, rank_values, config::actor_rank_utility_weight);
+                }
             } else {
                 getMCTS()->backup(node_path, values);
             }
@@ -182,12 +201,17 @@ void ZeroActor::setNetwork(const std::shared_ptr<network::Network>& network)
         if (config::actor_rank_utility_weight < 0.0f || config::actor_rank_utility_weight > 1.0f) {
             throw std::runtime_error("rank utility weight must be between 0 and 1");
         }
+        if (config::actor_rank_adaptive_gap_scale <= 0.0f) {
+            throw std::runtime_error("rank adaptive gap scale must be positive");
+        }
         if (config::actor_multiplayer_search_type != "maxn" &&
             config::actor_multiplayer_search_type != "paranoid" &&
-            config::actor_multiplayer_search_type != "rank") {
-            throw std::runtime_error("multiplayer search type must be maxn, paranoid, or rank");
+            config::actor_multiplayer_search_type != "rank" &&
+            config::actor_multiplayer_search_type != "rank_adaptive") {
+            throw std::runtime_error("multiplayer search type must be maxn, paranoid, rank, or rank_adaptive");
         }
-        if (config::actor_multiplayer_search_type == "rank" && config::actor_rank_utility_weight <= 0.0f) {
+        if ((config::actor_multiplayer_search_type == "rank" || config::actor_multiplayer_search_type == "rank_adaptive") &&
+            config::actor_rank_utility_weight <= 0.0f) {
             throw std::runtime_error("rank search requires a positive rank utility weight");
         }
         if (!alphazero_network_) { throw std::runtime_error("multiplayer environments currently support AlphaZero only"); }

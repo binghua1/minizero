@@ -110,6 +110,26 @@ int main()
     assert(std::abs(rank_utility_player1_edge->getMean() - 0.85f) < 1e-6f);
     assert(std::abs(rank_utility_player2_edge->getMean() + 0.1f) < 1e-6f);
 
+    MCTS adaptive_rank_utility_mcts(4);
+    adaptive_rank_utility_mcts.reset();
+    adaptive_rank_utility_mcts.setRootPlayer(Player::kPlayer1);
+    MCTSNode* adaptive_rank_utility_root = adaptive_rank_utility_mcts.getRootNode();
+    adaptive_rank_utility_mcts.expand(adaptive_rank_utility_root, {{Action(0, Player::kPlayer1), 1.0f, 0.0f}});
+    MCTSNode* adaptive_rank_utility_player1_edge = adaptive_rank_utility_root->getChild(0);
+    adaptive_rank_utility_mcts.expand(adaptive_rank_utility_player1_edge, {{Action(1, Player::kPlayer2), 1.0f, 0.0f}});
+    MCTSNode* adaptive_rank_utility_player2_edge = adaptive_rank_utility_player1_edge->getChild(0);
+    adaptive_rank_utility_mcts.backupAdaptiveRankUtility(
+        {adaptive_rank_utility_root, adaptive_rank_utility_player1_edge, adaptive_rank_utility_player2_edge},
+        PlayerValues{0.8f, 0.2f, -0.5f},
+        PlayerValues{1.0f, -1.0f, 0.0f},
+        3,
+        0.25f,
+        0.5f,
+        100.0f);
+    assert(std::abs(adaptive_rank_utility_root->getMean() - 0.8f) < 1e-5f);
+    assert(std::abs(adaptive_rank_utility_player1_edge->getMean() - 0.8f) < 1e-5f);
+    assert(std::abs(adaptive_rank_utility_player2_edge->getMean() + 0.1f) < 1e-4f);
+
     MCTS scalar_two_player_mcts(4);
     scalar_two_player_mcts.reset();
     MCTSNode* scalar_root = scalar_two_player_mcts.getRootNode();

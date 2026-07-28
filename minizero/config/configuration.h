@@ -22,6 +22,8 @@ extern bool actor_mcts_value_rescale;
 extern char actor_mcts_value_flipping_player;
 extern std::string actor_multiplayer_search_type;
 extern float actor_rank_utility_weight;
+extern float actor_rank_adaptive_gap_threshold;
+extern float actor_rank_adaptive_gap_scale;
 extern bool actor_select_action_by_count;
 extern bool actor_select_action_by_softmax_count;
 extern float actor_select_action_softmax_temperature;

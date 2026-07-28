@@ -32,6 +32,7 @@ DEFAULT_EVAL_OVERRIDES = {
     "zero_disable_resign_ratio": "1",
     "zero_actor_intermediate_sequence_length": "0",
 }
+RANK_SEARCH_TYPES = {"rank", "rank_adaptive"}
 MULTIPLAYER_SELF_EVAL_OVERRIDES = {
     "actor_use_gumbel": "false",
     "actor_use_gumbel_noise": "false",
@@ -852,9 +853,14 @@ def create_auto_manifest(args, repo_root, models, configs, executable):
             "program_auto_seed": "false",
             **overrides,
         }
-        if search_type == "rank":
+        if search_type in RANK_SEARCH_TYPES:
             if args.rank_weight is not None:
                 agent_overrides["actor_rank_utility_weight"] = str(args.rank_weight)
+            if search_type == "rank_adaptive":
+                if args.rank_adaptive_gap_threshold is not None:
+                    agent_overrides["actor_rank_adaptive_gap_threshold"] = str(args.rank_adaptive_gap_threshold)
+                if args.rank_adaptive_gap_scale is not None:
+                    agent_overrides["actor_rank_adaptive_gap_scale"] = str(args.rank_adaptive_gap_scale)
         else:
             agent_overrides["actor_rank_utility_weight"] = "0"
         conf_str = ":".join(f"{key}={value}" for key, value in agent_overrides.items())
@@ -1110,8 +1116,10 @@ def auto_main(argv):
     parser.add_argument("--rank-conf-file", help="config used by the Rank Utility agent")
     parser.add_argument("--executable", help="engine executable (default: build/GAME/minizero_GAME)")
     parser.add_argument("--output", help="output directory (default: TRAINING_DIR/evaluation/MODEL_SEARCHES)")
-    parser.add_argument("--search-types", nargs="+", default=["maxn", "paranoid"], choices=("maxn", "paranoid", "rank"))
+    parser.add_argument("--search-types", nargs="+", default=["maxn", "paranoid"], choices=("maxn", "paranoid", "rank", "rank_adaptive"))
     parser.add_argument("--rank-weight", type=float, help="rank contribution for the Rank Utility agent; must be in (0, 1]")
+    parser.add_argument("--rank-adaptive-gap-threshold", type=float, help="value-gap threshold tau for rank_adaptive search")
+    parser.add_argument("--rank-adaptive-gap-scale", type=float, help="sigmoid scale k for rank_adaptive search")
     parser.add_argument("--num-players", type=int)
     parser.add_argument("--num-simulations", type=int, help="override actor_num_simulation")
     parser.add_argument("--noise", action="store_true", help="enable Dirichlet noise for varied reproducible games")
@@ -1139,6 +1147,8 @@ def auto_main(argv):
         parser.error("game, timeout, thread, and simulation counts must be positive")
     if args.rank_weight is not None and not 0.0 < args.rank_weight <= 1.0:
         parser.error("--rank-weight must be in (0, 1]")
+    if args.rank_adaptive_gap_scale is not None and args.rank_adaptive_gap_scale <= 0.0:
+        parser.error("--rank-adaptive-gap-scale must be positive")
 
     repo_root = Path(__file__).resolve().parents[1]
     training_dir = Path(args.training_dir).resolve()
@@ -1149,9 +1159,10 @@ def auto_main(argv):
     models = {}
     configs = {}
     for search_type in args.search_types:
-        model_argument = getattr(args, f"{search_type}_model")
+        model_config_key = "rank" if search_type == "rank_adaptive" else search_type
+        model_argument = getattr(args, f"{model_config_key}_model")
         models[search_type] = resolve_auto_model(training_dir, model_argument) if model_argument else common_model
-        config_argument = getattr(args, f"{search_type}_conf_file")
+        config_argument = getattr(args, f"{model_config_key}_conf_file")
         if config_argument:
             configs[search_type] = resolve_auto_config(training_dir, config_argument)
         elif model_argument and models[search_type].parent.name == "model":
@@ -1172,12 +1183,26 @@ def auto_main(argv):
     effective_simulations = args.num_simulations or (next(iter(config_simulations)) if config_simulations else None)
     simulation_label = f"_n{effective_simulations}" if effective_simulations else ""
     effective_rank_weight = args.rank_weight
-    if effective_rank_weight is None and "rank" in args.search_types:
-        config_weight = read_config_value(configs["rank"], "actor_rank_utility_weight")
+    rank_searches = [search_type for search_type in args.search_types if search_type in RANK_SEARCH_TYPES]
+    if effective_rank_weight is None and rank_searches:
+        config_weight = read_config_value(configs[rank_searches[0]], "actor_rank_utility_weight")
         effective_rank_weight = float(config_weight) if config_weight is not None else 0.0
-    if "rank" in args.search_types and effective_rank_weight <= 0.0:
+    if rank_searches and effective_rank_weight <= 0.0:
         parser.error("Rank Utility evaluation requires --rank-weight or a positive actor_rank_utility_weight in its config")
     rank_label = f"_lambda{effective_rank_weight:g}" if effective_rank_weight is not None else ""
+    if "rank_adaptive" in args.search_types:
+        effective_gap_threshold = args.rank_adaptive_gap_threshold
+        if effective_gap_threshold is None:
+            config_threshold = read_config_value(configs["rank_adaptive"], "actor_rank_adaptive_gap_threshold")
+            effective_gap_threshold = float(config_threshold) if config_threshold is not None else None
+        effective_gap_scale = args.rank_adaptive_gap_scale
+        if effective_gap_scale is None:
+            config_scale = read_config_value(configs["rank_adaptive"], "actor_rank_adaptive_gap_scale")
+            effective_gap_scale = float(config_scale) if config_scale is not None else None
+        if effective_gap_threshold is not None:
+            rank_label += f"_tau{effective_gap_threshold:g}"
+        if effective_gap_scale is not None:
+            rank_label += f"_k{effective_gap_scale:g}"
     noise_label = "_noise" if args.noise else ""
     if len(set(models.values())) == 1:
         arena_label = f"{next(iter(models.values())).stem}_{search_label}"

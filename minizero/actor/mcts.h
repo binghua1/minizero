@@ -102,6 +102,13 @@ public:
     virtual void backup(const std::vector<MCTSNode*>& node_path, const float value, const float reward = 0.0f);
     virtual void backup(const std::vector<MCTSNode*>& node_path, const env::PlayerValues& values);
     virtual void backup(const std::vector<MCTSNode*>& node_path, const env::PlayerValues& values, const env::PlayerValues& rank_values, float rank_weight);
+    virtual void backupAdaptiveRankUtility(const std::vector<MCTSNode*>& node_path,
+                                           const env::PlayerValues& values,
+                                           const env::PlayerValues& rank_values,
+                                           int num_players,
+                                           float max_rank_weight,
+                                           float gap_threshold,
+                                           float gap_scale);
 
     inline MCTSNode* allocateNodes(int size) { return static_cast<MCTSNode*>(Tree::allocateNodes(size)); }
     inline int getNumSimulation() const { return getRootNode()->getCount(); }
