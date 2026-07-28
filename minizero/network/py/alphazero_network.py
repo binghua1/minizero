@@ -31,6 +31,7 @@ class AlphaZeroNetwork(nn.Module):
         self.num_value_hidden_channels = num_value_hidden_channels
         self.discrete_value_size = discrete_value_size
         self.num_players = num_players
+        self.use_rank_head = game_name == "blokus10" and discrete_value_size == 1 and num_players > 2
 
         self.conv = nn.Conv2d(num_input_channels, num_hidden_channels, kernel_size=3, padding=1)
         self.bn = nn.BatchNorm2d(num_hidden_channels)
@@ -40,6 +41,8 @@ class AlphaZeroNetwork(nn.Module):
         if self.discrete_value_size == 1:
             value_output_size = num_players if num_players > 2 else 1
             self.value = ValueNetwork(num_hidden_channels, hidden_channel_height, hidden_channel_width, num_value_hidden_channels, value_output_size)
+            if self.use_rank_head:
+                self.rank = ValueNetwork(num_hidden_channels, hidden_channel_height, hidden_channel_width, num_value_hidden_channels, value_output_size)
         else:
             self.value = DiscreteValueNetwork(num_hidden_channels, hidden_channel_height, hidden_channel_width, num_value_hidden_channels, discrete_value_size)
 
@@ -109,9 +112,12 @@ class AlphaZeroNetwork(nn.Module):
         # value
         if self.discrete_value_size == 1:
             value = self.value(x)
-            return {"policy_logit": policy_logit,
-                    "policy": policy,
-                    "value": value}
+            output = {"policy_logit": policy_logit,
+                      "policy": policy,
+                      "value": value}
+            if self.use_rank_head:
+                output["rank"] = self.rank(x)
+            return output
         else:
             value_logit = self.value(x)
             value = torch.softmax(value_logit, dim=1)
