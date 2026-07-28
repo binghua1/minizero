@@ -101,6 +101,7 @@ public:
     virtual void expand(MCTSNode* leaf_node, const std::vector<ActionCandidate>& action_candidates);
     virtual void backup(const std::vector<MCTSNode*>& node_path, const float value, const float reward = 0.0f);
     virtual void backup(const std::vector<MCTSNode*>& node_path, const env::PlayerValues& values);
+    virtual void backup(const std::vector<MCTSNode*>& node_path, const env::PlayerValues& values, const env::PlayerValues& rank_values, float rank_weight);
 
     inline MCTSNode* allocateNodes(int size) { return static_cast<MCTSNode*>(Tree::allocateNodes(size)); }
     inline int getNumSimulation() const { return getRootNode()->getCount(); }

@@ -2,6 +2,7 @@
 #include "tictacmo.h"
 #include "zero_server.h"
 #include <cassert>
+#include <cmath>
 #include <vector>
 
 int main()
@@ -91,6 +92,23 @@ int main()
     assert(maxn_high_player2_value->getMean() == 0.9f);
     assert(maxn_low_player2_value->getMean() == 0.1f);
     assert(maxn_selection_mcts.selectFromNode(maxn_selection_player1_edge).back() == maxn_high_player2_value);
+
+    MCTS rank_utility_mcts(4);
+    rank_utility_mcts.reset();
+    rank_utility_mcts.setRootPlayer(Player::kPlayer1);
+    MCTSNode* rank_utility_root = rank_utility_mcts.getRootNode();
+    rank_utility_mcts.expand(rank_utility_root, {{Action(0, Player::kPlayer1), 1.0f, 0.0f}});
+    MCTSNode* rank_utility_player1_edge = rank_utility_root->getChild(0);
+    rank_utility_mcts.expand(rank_utility_player1_edge, {{Action(1, Player::kPlayer2), 1.0f, 0.0f}});
+    MCTSNode* rank_utility_player2_edge = rank_utility_player1_edge->getChild(0);
+    rank_utility_mcts.backup(
+        {rank_utility_root, rank_utility_player1_edge, rank_utility_player2_edge},
+        PlayerValues{0.8f, 0.2f, -0.5f},
+        PlayerValues{1.0f, -1.0f, 0.0f},
+        0.25f);
+    assert(std::abs(rank_utility_root->getMean() - 0.85f) < 1e-6f);
+    assert(std::abs(rank_utility_player1_edge->getMean() - 0.85f) < 1e-6f);
+    assert(std::abs(rank_utility_player2_edge->getMean() + 0.1f) < 1e-6f);
 
     MCTS scalar_two_player_mcts(4);
     scalar_two_player_mcts.reset();

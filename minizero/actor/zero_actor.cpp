@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cassert>
 #include <memory>
+#include <numeric>
 #include <stdexcept>
 #include <tuple>
 #include <unordered_map>
@@ -14,6 +15,36 @@ namespace minizero::actor {
 
 using namespace minizero;
 using namespace network;
+
+namespace {
+
+env::PlayerValues calculateRankValues(const env::PlayerValues& scores, int num_players)
+{
+    assert(num_players > 1 && num_players <= env::kMaxNumPlayers);
+    std::vector<int> order(num_players);
+    std::iota(order.begin(), order.end(), 0);
+    std::sort(order.begin(), order.end(), [&scores](int lhs, int rhs) {
+        if (scores[lhs] == scores[rhs]) { return lhs < rhs; }
+        return scores[lhs] > scores[rhs];
+    });
+
+    env::PlayerValues ranks{};
+    for (int start = 0; start < num_players;) {
+        int end = start + 1;
+        while (end < num_players && scores[order[end]] == scores[order[start]]) { ++end; }
+
+        float tied_rank_sum = 0.0f;
+        for (int rank = start; rank < end; ++rank) {
+            tied_rank_sum += 1.0f - 2.0f * static_cast<float>(rank) / static_cast<float>(num_players - 1);
+        }
+        const float tied_rank = tied_rank_sum / static_cast<float>(end - start);
+        for (int rank = start; rank < end; ++rank) { ranks[order[rank]] = tied_rank; }
+        start = end;
+    }
+    return ranks;
+}
+
+} // namespace
 
 void MCTSSearchData::clear()
 {
@@ -92,9 +123,29 @@ void ZeroActor::afterNNEvaluation(const std::shared_ptr<NetworkOutput>& network_
             std::copy(alphazero_output->values_.begin(),
                       alphazero_output->values_.begin() + env_transition.getNumPlayer(),
                       values.begin());
-            getMCTS()->backup(node_path, values);
+            if (config::actor_rank_utility_weight > 0.0f) {
+                if (!alphazero_output->has_rank_) {
+                    throw std::runtime_error("rank utility search requires a model with a rank output");
+                }
+                env::PlayerValues rank_values{};
+                std::copy(alphazero_output->rank_values_.begin(),
+                          alphazero_output->rank_values_.begin() + env_transition.getNumPlayer(),
+                          rank_values.begin());
+                getMCTS()->backup(node_path, values, rank_values, config::actor_rank_utility_weight);
+            } else {
+                getMCTS()->backup(node_path, values);
+            }
         } else {
-            getMCTS()->backup(node_path, env_transition.getEvalScores());
+            const env::PlayerValues values = env_transition.getEvalScores();
+            if (config::actor_rank_utility_weight > 0.0f) {
+                getMCTS()->backup(
+                    node_path,
+                    values,
+                    calculateRankValues(values, env_transition.getNumPlayer()),
+                    config::actor_rank_utility_weight);
+            } else {
+                getMCTS()->backup(node_path, values);
+            }
         }
     } else if (muzero_network_) {
         std::shared_ptr<MuZeroNetworkOutput> muzero_output = std::static_pointer_cast<MuZeroNetworkOutput>(network_output);
@@ -128,6 +179,9 @@ void ZeroActor::setNetwork(const std::shared_ptr<network::Network>& network)
     assert((alphazero_network_ && !muzero_network_) || (!alphazero_network_ && muzero_network_));
 
     if (env_.getNumPlayer() > 2) {
+        if (config::actor_rank_utility_weight < 0.0f || config::actor_rank_utility_weight > 1.0f) {
+            throw std::runtime_error("rank utility weight must be between 0 and 1");
+        }
         if (config::actor_multiplayer_search_type != "maxn" && config::actor_multiplayer_search_type != "paranoid") {
             throw std::runtime_error("multiplayer search type must be maxn or paranoid");
         }
