@@ -182,8 +182,13 @@ void ZeroActor::setNetwork(const std::shared_ptr<network::Network>& network)
         if (config::actor_rank_utility_weight < 0.0f || config::actor_rank_utility_weight > 1.0f) {
             throw std::runtime_error("rank utility weight must be between 0 and 1");
         }
-        if (config::actor_multiplayer_search_type != "maxn" && config::actor_multiplayer_search_type != "paranoid") {
-            throw std::runtime_error("multiplayer search type must be maxn or paranoid");
+        if (config::actor_multiplayer_search_type != "maxn" &&
+            config::actor_multiplayer_search_type != "paranoid" &&
+            config::actor_multiplayer_search_type != "rank") {
+            throw std::runtime_error("multiplayer search type must be maxn, paranoid, or rank");
+        }
+        if (config::actor_multiplayer_search_type == "rank" && config::actor_rank_utility_weight <= 0.0f) {
+            throw std::runtime_error("rank search requires a positive rank utility weight");
         }
         if (!alphazero_network_) { throw std::runtime_error("multiplayer environments currently support AlphaZero only"); }
         if (network->getNumPlayers() != env_.getNumPlayer()) { throw std::runtime_error("network and environment player counts do not match"); }
