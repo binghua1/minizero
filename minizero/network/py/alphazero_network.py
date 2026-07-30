@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from .network_unit import ResidualBlock, PolicyNetwork, ValueNetwork, DiscreteValueNetwork
+from .network_unit import ResidualBlock, PolicyNetwork, ValueNetwork, RankNetwork, DiscreteValueNetwork
 
 
 class AlphaZeroNetwork(nn.Module):
@@ -42,7 +42,8 @@ class AlphaZeroNetwork(nn.Module):
             value_output_size = num_players if num_players > 2 else 1
             self.value = ValueNetwork(num_hidden_channels, hidden_channel_height, hidden_channel_width, num_value_hidden_channels, value_output_size)
             if self.use_rank_head:
-                self.rank = ValueNetwork(num_hidden_channels, hidden_channel_height, hidden_channel_width, num_value_hidden_channels, value_output_size)
+                self.rank = RankNetwork(num_hidden_channels, hidden_channel_height, hidden_channel_width, num_value_hidden_channels, num_players)
+                self.register_buffer("rank_utility", torch.linspace(1.0, -1.0, steps=num_players))
         else:
             self.value = DiscreteValueNetwork(num_hidden_channels, hidden_channel_height, hidden_channel_width, num_value_hidden_channels, discrete_value_size)
 
@@ -116,7 +117,11 @@ class AlphaZeroNetwork(nn.Module):
                       "policy": policy,
                       "value": value}
             if self.use_rank_head:
-                output["rank"] = self.rank(x)
+                rank_logit = self.rank(x)
+                rank_probability = torch.softmax(rank_logit, dim=2)
+                output["rank_logit"] = rank_logit
+                output["rank_probability"] = rank_probability
+                output["rank"] = (rank_probability * self.rank_utility.view(1, 1, -1)).sum(dim=2)
             return output
         else:
             value_logit = self.value(x)

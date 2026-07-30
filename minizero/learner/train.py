@@ -25,19 +25,21 @@ class MinizeroDadaLoader:
         self.features = np.zeros(py.get_batch_size() * py.get_nn_num_input_channels() * py.get_nn_input_channel_height() * py.get_nn_input_channel_width(), dtype=np.float32)
         self.loss_scale = np.zeros(py.get_batch_size(), dtype=np.float32)
         self.value_output_size = py.get_nn_value_output_size()
+        self.rank_output_size = py.get_nn_rank_output_size()
+        self.use_rank_classification = py.get_game_name() == "blokus10" and py.get_nn_num_players() > 2
         self.value_accumulator = np.ones(1) if py.get_nn_discrete_value_size() == 1 else np.arange(-int(py.get_nn_discrete_value_size() / 2), int(py.get_nn_discrete_value_size() / 2) + 1)
         if py.get_nn_type_name() == "alphazero":
             self.action_features = None
             self.policy = np.zeros(py.get_batch_size() * py.get_nn_action_size(), dtype=np.float32)
             self.value = np.zeros(py.get_batch_size() * self.value_output_size, dtype=np.float32)
-            self.rank = np.zeros(py.get_batch_size() * self.value_output_size, dtype=np.float32)
+            self.rank = np.zeros(py.get_batch_size() * self.rank_output_size, dtype=np.float32)
             self.reward = None
         else:
             self.action_features = np.zeros(py.get_batch_size() * py.get_muzero_unrolling_step() * py.get_nn_num_action_feature_channels()
                                             * py.get_nn_hidden_channel_height() * py.get_nn_hidden_channel_width(), dtype=np.float32)
             self.policy = np.zeros(py.get_batch_size() * (py.get_muzero_unrolling_step() + 1) * py.get_nn_action_size(), dtype=np.float32)
             self.value = np.zeros(py.get_batch_size() * (py.get_muzero_unrolling_step() + 1) * py.get_nn_discrete_value_size(), dtype=np.float32)
-            self.rank = np.zeros(py.get_batch_size() * py.get_nn_discrete_value_size(), dtype=np.float32)
+            self.rank = np.zeros(py.get_batch_size() * self.rank_output_size, dtype=np.float32)
             self.reward = np.zeros(py.get_batch_size() * py.get_muzero_unrolling_step() * py.get_nn_discrete_value_size(), dtype=np.float32)
 
     def load_data(self, training_dir, start_iter, end_iter):
@@ -61,7 +63,10 @@ class MinizeroDadaLoader:
         policy = torch.FloatTensor(self.policy).view(py.get_batch_size(), -1, py.get_nn_action_size()).to(device)
         if py.get_nn_type_name() == "alphazero":
             value = torch.FloatTensor(self.value).view(py.get_batch_size(), 1, self.value_output_size).to(device)
-            rank = torch.FloatTensor(self.rank).view(py.get_batch_size(), 1, self.value_output_size).to(device)
+            if self.use_rank_classification:
+                rank = torch.FloatTensor(self.rank).view(py.get_batch_size(), 1, py.get_nn_num_players(), py.get_nn_num_players()).to(device)
+            else:
+                rank = torch.FloatTensor(self.rank).view(py.get_batch_size(), 1, self.rank_output_size).to(device)
         else:
             value = torch.FloatTensor(self.value).view(py.get_batch_size(), -1, py.get_nn_discrete_value_size()).to(device)
             rank = None
@@ -119,10 +124,27 @@ class Model:
         if model_file:
             snapshot = torch.load(f"{training_dir}/model/{model_file}", map_location=torch.device('cpu'))
             self.training_step = snapshot['training_step']
-            self.network.load_state_dict(snapshot['network'])
-            self.optimizer.load_state_dict(snapshot['optimizer'])
-            self.optimizer.param_groups[0]["lr"] = py.get_learning_rate()
-            self.scheduler.load_state_dict(snapshot['scheduler'])
+            try:
+                self.network.load_state_dict(snapshot['network'])
+            except RuntimeError:
+                current_state = self.network.state_dict()
+                incompatible_keys = {
+                    key for key, value in snapshot['network'].items()
+                    if key in current_state and current_state[key].shape != value.shape
+                }
+                allowed_keys = {"rank.fc2.weight", "rank.fc2.bias"}
+                if not incompatible_keys or not incompatible_keys.issubset(allowed_keys):
+                    raise
+                compatible_state = {
+                    key: value for key, value in snapshot['network'].items()
+                    if key in current_state and current_state[key].shape == value.shape
+                }
+                self.network.load_state_dict(compatible_state, strict=False)
+                eprint("Warm-started rank classification model; reinitialized rank.fc2 and optimizer state.")
+            else:
+                self.optimizer.load_state_dict(snapshot['optimizer'])
+                self.optimizer.param_groups[0]["lr"] = py.get_learning_rate()
+                self.scheduler.load_state_dict(snapshot['scheduler'])
 
         # for multi-gpu
         self.network = nn.DataParallel(self.network)
@@ -165,10 +187,16 @@ def calculate_player_value_losses(network_output, label_value, loss_scale):
 
 
 def calculate_rank_loss(network_output, label_rank, loss_scale):
-    if label_rank is None or "rank" not in network_output or py.get_rank_loss_scale() <= 0:
+    if label_rank is None or "rank_logit" not in network_output or py.get_rank_loss_scale() <= 0:
         return None
-    rank_error = nn.functional.mse_loss(network_output["rank"], label_rank, reduction='none')
-    return (rank_error.view(rank_error.shape[0], -1).mean(dim=1) * loss_scale).mean()
+    rank_cross_entropy = -(label_rank * nn.functional.log_softmax(network_output["rank_logit"], dim=2)).sum(dim=2)
+    return (rank_cross_entropy.mean(dim=1) * loss_scale).mean()
+
+
+def calculate_rank_accuracy(network_output, label_rank):
+    predicted_rank = network_output["rank_logit"].argmax(dim=2, keepdim=True)
+    correct_probability = label_rank.gather(dim=2, index=predicted_rank)
+    return (correct_probability > 0).float().mean().item()
 
 
 def add_training_info(training_info, key, value):
@@ -210,6 +238,7 @@ def train(model, training_dir, data_loader, start_iter, end_iter):
             add_training_info(training_info, 'loss_value', loss_value.item())
             if loss_rank is not None:
                 add_training_info(training_info, 'loss_rank', loss_rank.item())
+                add_training_info(training_info, 'accuracy_rank', calculate_rank_accuracy(network_output, label_rank[:, 0]))
             if py.get_nn_num_players() > 2:
                 player_value_losses = calculate_player_value_losses(network_output, label_value[:, 0], loss_scale)
                 for player_index, player_value_loss in enumerate(player_value_losses):

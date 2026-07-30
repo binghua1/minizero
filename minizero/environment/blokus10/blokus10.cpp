@@ -482,6 +482,42 @@ std::vector<float> Blokus10EnvLoader::getRank(const int /* pos */) const
     return ranks;
 }
 
+std::vector<float> Blokus10EnvLoader::getRankDistribution(const int /* pos */) const
+{
+    PlayerValues scores{};
+    if (!getTag("SC").empty()) {
+        scores = stringToPlayerValues(getTag("SC"), kBlokus10NumPlayer);
+    } else {
+        const PlayerValues values = stringToPlayerValues(getTag("RE"), kBlokus10NumPlayer);
+        for (int player = 0; player < kBlokus10NumPlayer; ++player) {
+            scores[player] = 0.5f * (values[player] + 1.0f) * static_cast<float>(kBlokus10TotalSquares + 20) -
+                             static_cast<float>(kBlokus10TotalSquares);
+        }
+    }
+
+    std::array<int, kBlokus10NumPlayer> order{{0, 1, 2, 3}};
+    std::sort(order.begin(), order.end(), [&scores](int lhs, int rhs) {
+        if (scores[lhs] == scores[rhs]) { return lhs < rhs; }
+        return scores[lhs] > scores[rhs];
+    });
+
+    std::vector<float> distribution(kBlokus10NumPlayer * kBlokus10NumPlayer, 0.0f);
+    for (int start = 0; start < kBlokus10NumPlayer;) {
+        int end = start + 1;
+        while (end < kBlokus10NumPlayer && scores[order[end]] == scores[order[start]]) { ++end; }
+
+        const float probability = 1.0f / static_cast<float>(end - start);
+        for (int rank = start; rank < end; ++rank) {
+            const int player = order[rank];
+            for (int tied_rank = start; tied_rank < end; ++tied_rank) {
+                distribution[player * kBlokus10NumPlayer + tied_rank] = probability;
+            }
+        }
+        start = end;
+    }
+    return distribution;
+}
+
 std::vector<float> Blokus10EnvLoader::getActionFeatures(const int pos, utils::Rotation rotation /* = utils::Rotation::kRotationNone */) const
 {
     (void)rotation;

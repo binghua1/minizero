@@ -65,6 +65,14 @@ PYBIND11_MODULE(minizero_py, m)
                    ? getEnvInstance().getNumPlayer()
                    : getEnvInstance().getDiscreteValueSize();
     });
+    m.def("get_nn_rank_output_size", []() {
+        const int num_players = getEnvInstance().getNumPlayer();
+        return config::nn_type_name == "alphazero" && getEnvInstance().name() == "blokus10" && num_players > 2
+                   ? num_players * num_players
+                   : (config::nn_type_name == "alphazero" && num_players > 2
+                          ? num_players
+                          : getEnvInstance().getDiscreteValueSize());
+    });
     m.def("get_nn_type_name", []() { return config::nn_type_name; });
 
     py::class_<learner::DataLoader>(m, "DataLoader")

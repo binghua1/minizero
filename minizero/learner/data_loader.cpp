@@ -145,7 +145,7 @@ void DataLoaderThread::setAlphaZeroTrainingData(int batch_index)
     std::vector<float> features = env_loader.getFeatures(pos, rotation);
     std::vector<float> policy = env_loader.getPolicy(pos, rotation);
     std::vector<float> value = env_loader.getValue(pos);
-    std::vector<float> rank = env_loader.getRank(pos);
+    std::vector<float> rank = env_loader.getRankDistribution(pos);
 
     // write data to data_ptr
     getSharedData()->getDataPtr()->loss_scale_[batch_index] = loss_scale;

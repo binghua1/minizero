@@ -28,3 +28,16 @@ if(GAME_TYPE STREQUAL "BLOKUS15")
     target_link_libraries(blokus15_test environment config utils)
     add_test(NAME blokus15_test COMMAND blokus15_test)
 endif()
+
+if(GAME_TYPE STREQUAL "BLOKUS10")
+    add_executable(blokus10_rank_test blokus10_rank_test.cpp)
+    target_link_libraries(blokus10_rank_test environment config utils)
+    add_test(NAME blokus10_rank_test COMMAND blokus10_rank_test)
+
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    add_test(
+        NAME rank_classification_test
+        COMMAND ${Python3_EXECUTABLE} -m unittest -v tests/test_rank_classification.py
+        WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+    )
+endif()

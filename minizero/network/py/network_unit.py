@@ -70,6 +70,27 @@ class ValueNetwork(nn.Module):
         return x
 
 
+class RankNetwork(nn.Module):
+    def __init__(self, num_channels, channel_height, channel_width, num_value_hidden_channels, num_players):
+        super(RankNetwork, self).__init__()
+        self.channel_height = channel_height
+        self.channel_width = channel_width
+        self.num_players = num_players
+        self.conv = nn.Conv2d(num_channels, 1, kernel_size=1)
+        self.bn = nn.BatchNorm2d(1)
+        self.fc1 = nn.Linear(channel_height * channel_width, num_value_hidden_channels)
+        self.fc2 = nn.Linear(num_value_hidden_channels, num_players * num_players)
+
+    def forward(self, x):
+        x = self.conv(x)
+        x = self.bn(x)
+        x = F.relu(x)
+        x = x.view(-1, self.channel_height * self.channel_width)
+        x = self.fc1(x)
+        x = F.relu(x)
+        return self.fc2(x).view(-1, self.num_players, self.num_players)
+
+
 class DiscreteValueNetwork(nn.Module):
     def __init__(self, num_channels, channel_height, channel_width, num_value_hidden_channels, value_size):
         super(DiscreteValueNetwork, self).__init__()
