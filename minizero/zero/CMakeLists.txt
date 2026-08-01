@@ -8,6 +8,7 @@ target_include_directories(
 target_link_libraries(
     zero
     config
+    environment
     utils
     ${Boost_LIBRARIES}
 )
