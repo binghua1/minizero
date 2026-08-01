@@ -542,6 +542,142 @@ def write_csv(path, fieldnames, rows):
         writer.writerows(rows)
 
 
+def write_top_tie_summaries(results, agent_names, output_dir):
+    valid = [record for record in results if not record.get("error")]
+
+    def empty_stats():
+        stats = {
+            "games": 0,
+            "mixed_top_ties": 0,
+            "return_sums": {agent: 0.0 for agent in agent_names},
+            "seat_counts": {agent: 0 for agent in agent_names},
+            "unique_wins": {agent: 0 for agent in agent_names},
+            "own_top_ties": {agent: 0 for agent in agent_names},
+            "top_tie_scores": {agent: 0.0 for agent in agent_names},
+        }
+        return stats
+
+    by_lineup = {}
+    overall = empty_stats()
+
+    def add_record(stats, record):
+        stats["games"] += 1
+        seating = record["seating"]
+        returns = record["returns"]
+        for agent, value in zip(seating, returns):
+            stats["return_sums"][agent] += value
+            stats["seat_counts"][agent] += 1
+
+        best_return = max(returns)
+        top_seats = [seat for seat, value in enumerate(returns) if abs(value - best_return) <= 1e-6]
+        top_agents = sorted(set(seating[seat] for seat in top_seats))
+
+        if len(top_seats) == 1:
+            agent = seating[top_seats[0]]
+            stats["unique_wins"][agent] += 1
+            stats["top_tie_scores"][agent] += 1.0
+        elif len(top_agents) == 1:
+            agent = top_agents[0]
+            stats["own_top_ties"][agent] += 1
+            stats["top_tie_scores"][agent] += 1.0
+        else:
+            stats["mixed_top_ties"] += 1
+            share = 1.0 / len(top_agents)
+            for agent in top_agents:
+                stats["top_tie_scores"][agent] += share
+
+    for record in valid:
+        stats = by_lineup.setdefault(record["lineup_id"], empty_stats())
+        add_record(stats, record)
+        add_record(overall, record)
+
+    def top_tie_row(lineup_id, stats):
+        row = {
+            "lineup_id": lineup_id,
+            "games": stats["games"],
+            "mixed_top_ties": stats["mixed_top_ties"],
+        }
+        for agent in agent_names:
+            row[f"{agent}_unique_wins"] = stats["unique_wins"][agent]
+            row[f"{agent}_own_top_ties"] = stats["own_top_ties"][agent]
+            row[f"{agent}_top_tie_score"] = stats["top_tie_scores"][agent]
+            row[f"{agent}_top_tie_rate"] = stats["top_tie_scores"][agent] / stats["games"] if stats["games"] else 0.0
+            row[f"{agent}_avg_return"] = (
+                stats["return_sums"][agent] / stats["seat_counts"][agent] if stats["seat_counts"][agent] else 0.0
+            )
+        return row
+
+    top_tie_rows = [top_tie_row(lineup_id, by_lineup[lineup_id]) for lineup_id in sorted(by_lineup)]
+    top_tie_rows.append(top_tie_row("all", overall))
+    top_tie_fields = ["lineup_id", "games", "mixed_top_ties"]
+    for agent in agent_names:
+        top_tie_fields.extend([
+            f"{agent}_unique_wins",
+            f"{agent}_own_top_ties",
+            f"{agent}_top_tie_score",
+            f"{agent}_top_tie_rate",
+            f"{agent}_avg_return",
+        ])
+    write_csv(output_dir / "top_tie_summary.csv", top_tie_fields, top_tie_rows)
+
+    if len(agent_names) != 2:
+        return
+
+    agent_a, agent_b = agent_names
+
+    def pair_row(lineup_id, stats):
+        if lineup_id == "all":
+            agent_a_count = ""
+            agent_b_count = ""
+            case = "all"
+        else:
+            lineups = [record["seating"] for record in valid if record["lineup_id"] == lineup_id]
+            first_lineup = lineups[0] if lineups else []
+            agent_a_count = first_lineup.count(agent_a)
+            agent_b_count = first_lineup.count(agent_b)
+            case = f"{agent_b_count} {agent_b} vs {agent_a_count} {agent_a}"
+        return {
+            "case": case,
+            "lineup_id": lineup_id,
+            "games": stats["games"],
+            f"{agent_a}_unique_wins": stats["unique_wins"][agent_a],
+            f"{agent_b}_unique_wins": stats["unique_wins"][agent_b],
+            "mixed_top_ties": stats["mixed_top_ties"],
+            f"{agent_a}_only_top_ties": stats["own_top_ties"][agent_a],
+            f"{agent_b}_only_top_ties": stats["own_top_ties"][agent_b],
+            f"{agent_a}_top_tie_score": stats["top_tie_scores"][agent_a],
+            f"{agent_b}_top_tie_score": stats["top_tie_scores"][agent_b],
+            f"{agent_a}_top_tie_rate": stats["top_tie_scores"][agent_a] / stats["games"] if stats["games"] else 0.0,
+            f"{agent_b}_top_tie_rate": stats["top_tie_scores"][agent_b] / stats["games"] if stats["games"] else 0.0,
+            f"{agent_a}_avg_return": (
+                stats["return_sums"][agent_a] / stats["seat_counts"][agent_a] if stats["seat_counts"][agent_a] else 0.0
+            ),
+            f"{agent_b}_avg_return": (
+                stats["return_sums"][agent_b] / stats["seat_counts"][agent_b] if stats["seat_counts"][agent_b] else 0.0
+            ),
+        }
+
+    pair_rows = [pair_row(lineup_id, by_lineup[lineup_id]) for lineup_id in sorted(by_lineup)]
+    pair_rows.append(pair_row("all", overall))
+    pair_fields = [
+        "case",
+        "lineup_id",
+        "games",
+        f"{agent_a}_unique_wins",
+        f"{agent_b}_unique_wins",
+        "mixed_top_ties",
+        f"{agent_a}_only_top_ties",
+        f"{agent_b}_only_top_ties",
+        f"{agent_a}_top_tie_score",
+        f"{agent_b}_top_tie_score",
+        f"{agent_a}_top_tie_rate",
+        f"{agent_b}_top_tie_rate",
+        f"{agent_a}_avg_return",
+        f"{agent_b}_avg_return",
+    ]
+    write_csv(output_dir / "top_tie_pair_summary.csv", pair_fields, pair_rows)
+
+
 def summarize(results, agent_names, players, output_dir):
     valid = [record for record in results if not record.get("error")]
     agent_stats = {name: {"games": 0, "wins": 0, "draws": 0, "losses": 0, "return_sum": 0.0} for name in agent_names}
@@ -634,6 +770,7 @@ def summarize(results, agent_names, players, output_dir):
         {"game_id": record["game_id"], "seating": "/".join(record["seating"]), "error": record["error"]}
         for record in results if record.get("error")
     ])
+    write_top_tie_summaries(results, agent_names, output_dir)
     write_arena_plots(output_dir, agent_rows, seat_rows)
     return agent_rows, len(valid), len(results) - len(valid)
 
