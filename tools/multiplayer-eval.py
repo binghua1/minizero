@@ -545,6 +545,16 @@ def write_csv(path, fieldnames, rows):
 def write_top_tie_summaries(results, agent_names, output_dir):
     valid = [record for record in results if not record.get("error")]
 
+    def normal_ci95(rate, games):
+        if games <= 0:
+            return 0.0
+        return 1.96 * math.sqrt(rate * (1.0 - rate) / games)
+
+    def format_top_tie_rate(rate, games, include_ci=False):
+        if include_ci:
+            return f"{rate * 100.0:.2f} ± {normal_ci95(rate, games) * 100.0:.2f}%"
+        return f"{rate * 100.0:.2f}%"
+
     def empty_stats():
         stats = {
             "games": 0,
@@ -592,16 +602,18 @@ def write_top_tie_summaries(results, agent_names, output_dir):
         add_record(overall, record)
 
     def top_tie_row(lineup_id, stats):
+        include_ci = lineup_id == "all"
         row = {
             "lineup_id": lineup_id,
             "games": stats["games"],
             "mixed_top_ties": stats["mixed_top_ties"],
         }
         for agent in agent_names:
+            top_tie_rate = stats["top_tie_scores"][agent] / stats["games"] if stats["games"] else 0.0
             row[f"{agent}_unique_wins"] = stats["unique_wins"][agent]
             row[f"{agent}_own_top_ties"] = stats["own_top_ties"][agent]
             row[f"{agent}_top_tie_score"] = stats["top_tie_scores"][agent]
-            row[f"{agent}_top_tie_rate"] = stats["top_tie_scores"][agent] / stats["games"] if stats["games"] else 0.0
+            row[f"{agent}_top_tie_rate"] = format_top_tie_rate(top_tie_rate, stats["games"], include_ci)
             row[f"{agent}_avg_return"] = (
                 stats["return_sums"][agent] / stats["seat_counts"][agent] if stats["seat_counts"][agent] else 0.0
             )
@@ -630,12 +642,16 @@ def write_top_tie_summaries(results, agent_names, output_dir):
             agent_a_count = ""
             agent_b_count = ""
             case = "all"
+            include_ci = True
         else:
             lineups = [record["seating"] for record in valid if record["lineup_id"] == lineup_id]
             first_lineup = lineups[0] if lineups else []
             agent_a_count = first_lineup.count(agent_a)
             agent_b_count = first_lineup.count(agent_b)
             case = f"{agent_b_count} {agent_b} vs {agent_a_count} {agent_a}"
+            include_ci = False
+        agent_a_rate = stats["top_tie_scores"][agent_a] / stats["games"] if stats["games"] else 0.0
+        agent_b_rate = stats["top_tie_scores"][agent_b] / stats["games"] if stats["games"] else 0.0
         return {
             "case": case,
             "lineup_id": lineup_id,
@@ -647,8 +663,8 @@ def write_top_tie_summaries(results, agent_names, output_dir):
             f"{agent_b}_only_top_ties": stats["own_top_ties"][agent_b],
             f"{agent_a}_top_tie_score": stats["top_tie_scores"][agent_a],
             f"{agent_b}_top_tie_score": stats["top_tie_scores"][agent_b],
-            f"{agent_a}_top_tie_rate": stats["top_tie_scores"][agent_a] / stats["games"] if stats["games"] else 0.0,
-            f"{agent_b}_top_tie_rate": stats["top_tie_scores"][agent_b] / stats["games"] if stats["games"] else 0.0,
+            f"{agent_a}_top_tie_rate": format_top_tie_rate(agent_a_rate, stats["games"], include_ci),
+            f"{agent_b}_top_tie_rate": format_top_tie_rate(agent_b_rate, stats["games"], include_ci),
             f"{agent_a}_avg_return": (
                 stats["return_sums"][agent_a] / stats["seat_counts"][agent_a] if stats["seat_counts"][agent_a] else 0.0
             ),
