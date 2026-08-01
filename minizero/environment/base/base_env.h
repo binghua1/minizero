@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <array>
 #include <cassert>
+#include <cstdint>
 #include <fstream>
 #include <memory>
 #include <sstream>
@@ -125,6 +126,29 @@ public:
     virtual std::string name() const = 0;
     virtual int getNumPlayer() const = 0;
     virtual void setTurn(Player p) { turn_ = p; }
+
+    virtual std::vector<int64_t> getBehaviorHistory(int history_length, utils::Rotation rotation = utils::Rotation::kRotationNone) const
+    {
+        const int padding_action = getPolicySize();
+        std::vector<std::vector<int64_t>> player_actions(getNumPlayer());
+        for (const Action& action : actions_) {
+            const int player = playerToIndex(action.getPlayer());
+            if (player >= 0 && player < getNumPlayer()) {
+                player_actions[player].push_back(getRotateAction(action.getActionID(), rotation));
+            }
+        }
+
+        std::vector<int64_t> history(getNumPlayer() * history_length, padding_action);
+        for (int player = 0; player < getNumPlayer(); ++player) {
+            const int count = std::min(history_length, static_cast<int>(player_actions[player].size()));
+            const int source_start = static_cast<int>(player_actions[player].size()) - count;
+            const int target_start = player * history_length + history_length - count;
+            std::copy(player_actions[player].begin() + source_start,
+                      player_actions[player].end(),
+                      history.begin() + target_start);
+        }
+        return history;
+    }
 
     inline Player getTurn() const { return turn_; }
     inline const std::vector<Action>& getActionHistory() const { return actions_; }
@@ -300,8 +324,46 @@ public:
         }
     }
 
+    virtual bool isPositionTrainable(const int pos) const
+    {
+        if (pos < 0 || pos >= static_cast<int>(action_pairs_.size())) { return false; }
+        const std::string trainable = action_pairs_[pos].second["TR"];
+        return trainable.empty() || trainable != "0";
+    }
+
+    virtual std::vector<int64_t> getBehaviorHistory(const int pos, int history_length, utils::Rotation rotation = utils::Rotation::kRotationNone) const
+    {
+        const int padding_action = getPolicySize();
+        std::vector<std::vector<int64_t>> player_actions(getNumPlayer());
+        for (int i = 0; i < std::min(pos, static_cast<int>(action_pairs_.size())); ++i) {
+            const Action& action = action_pairs_[i].first;
+            const int player = playerToIndex(action.getPlayer());
+            if (player >= 0 && player < getNumPlayer()) {
+                player_actions[player].push_back(getRotateAction(action.getActionID(), rotation));
+            }
+        }
+
+        std::vector<int64_t> history(getNumPlayer() * history_length, padding_action);
+        for (int player = 0; player < getNumPlayer(); ++player) {
+            const int count = std::min(history_length, static_cast<int>(player_actions[player].size()));
+            const int source_start = static_cast<int>(player_actions[player].size()) - count;
+            const int target_start = player * history_length + history_length - count;
+            std::copy(player_actions[player].begin() + source_start,
+                      player_actions[player].end(),
+                      history.begin() + target_start);
+        }
+        return history;
+    }
+
+    virtual int getPlayerAtPosition(const int pos) const
+    {
+        if (pos >= 0 && pos < static_cast<int>(action_pairs_.size())) {
+            return playerToIndex(action_pairs_[pos].first.getPlayer());
+        }
+        return 0;
+    }
+
     virtual std::vector<float> getValue(const int pos) const { return (pos < static_cast<int>(action_pairs_.size()) ? std::vector<float>{std::stof(action_pairs_[pos].second["V"])} : std::vector<float>{0.0f}); }
-    virtual std::vector<float> getRank(const int /* pos */) const { return std::vector<float>(getValue(0).size(), 0.0f); }
     virtual std::vector<float> getReward(const int pos) const { return (pos < static_cast<int>(action_pairs_.size()) ? std::vector<float>{std::stof(action_pairs_[pos].second["R"])} : std::vector<float>{0.0f}); }
     virtual bool setActionPairInfo(const int pos, const std::string& tag, const std::string value)
     {
@@ -314,6 +376,7 @@ public:
     virtual std::vector<float> getActionFeatures(const int pos, utils::Rotation rotation = utils::Rotation::kRotationNone) const = 0;
     virtual std::string name() const = 0;
     virtual int getPolicySize() const = 0;
+    virtual int getNumPlayer() const { return static_cast<int>(getValue(0).size()); }
     virtual int getRotatePosition(int position, utils::Rotation rotation) const = 0;
     virtual int getRotateAction(int action_id, utils::Rotation rotation) const = 0;
     virtual inline std::string getTag(const std::string& key) const { return tags_.count(key) ? tags_.at(key) : ""; }

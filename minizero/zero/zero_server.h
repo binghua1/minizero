@@ -5,10 +5,13 @@
 #include "time_system.h"
 #include <boost/date_time/posix_time/posix_time.hpp>
 #include <boost/thread.hpp>
+#include <cstdint>
 #include <ctime>
 #include <fstream>
 #include <queue>
 #include <string>
+#include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace minizero::zero {
@@ -110,6 +113,9 @@ protected:
     virtual void broadcastSelfPlayJob();
     virtual void optimization();
     virtual std::string getUpdatedConfig();
+    std::vector<int> getPopulationIterations();
+    std::vector<float> getPopulationSeatWeights(int historical_iteration) const;
+    void recordPopulationResult(const ZeroSelfPlayData& sp_data);
     void syncConfig();
     void stopJob(const std::string& job_type);
     void close();
@@ -123,6 +129,7 @@ protected:
     std::vector<int> latest_game_lengths_;
     std::vector<float> latest_game_returns_;
     std::vector<std::vector<float>> latest_game_player_returns_;
+    std::unordered_map<int64_t, std::pair<double, int>> population_seat_return_stats_;
 };
 
 } // namespace minizero::zero

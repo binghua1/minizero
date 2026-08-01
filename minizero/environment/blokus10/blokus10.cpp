@@ -435,51 +435,12 @@ Player Blokus10Env::getPlayerAt(int row, int col) const
 void Blokus10EnvLoader::loadFromEnvironment(const Blokus10Env& env, const std::vector<std::vector<std::pair<std::string, std::string>>>& action_info_history /* = {} */)
 {
     BaseEnvLoader<Blokus10Action, Blokus10Env>::loadFromEnvironment(env, action_info_history);
-    PlayerValues scores{};
-    for (int player = 0; player < kBlokus10NumPlayer; ++player) {
-        scores[player] = static_cast<float>(env.getPlayerScore(indexToPlayer(player)));
-    }
-    addTag("SC", playerValuesToString(scores, kBlokus10NumPlayer));
     addTag("RE", playerValuesToString(env.getEvalScores(), kBlokus10NumPlayer));
 }
 
 std::vector<float> Blokus10EnvLoader::getValue(const int pos) const
 {
     return playerValuesToVector(stringToPlayerValues(getTag("RE"), kBlokus10NumPlayer), kBlokus10NumPlayer);
-}
-
-std::vector<float> Blokus10EnvLoader::getRank(const int /* pos */) const
-{
-    PlayerValues scores{};
-    if (!getTag("SC").empty()) {
-        scores = stringToPlayerValues(getTag("SC"), kBlokus10NumPlayer);
-    } else {
-        const PlayerValues values = stringToPlayerValues(getTag("RE"), kBlokus10NumPlayer);
-        for (int player = 0; player < kBlokus10NumPlayer; ++player) {
-            scores[player] = 0.5f * (values[player] + 1.0f) * static_cast<float>(kBlokus10TotalSquares + 20) -
-                             static_cast<float>(kBlokus10TotalSquares);
-        }
-    }
-
-    const std::array<float, kBlokus10NumPlayer> rank_values{{1.0f, 1.0f / 3.0f, -1.0f / 3.0f, -1.0f}};
-    std::array<int, kBlokus10NumPlayer> order{{0, 1, 2, 3}};
-    std::sort(order.begin(), order.end(), [&scores](int lhs, int rhs) {
-        if (scores[lhs] == scores[rhs]) { return lhs < rhs; }
-        return scores[lhs] > scores[rhs];
-    });
-
-    std::vector<float> ranks(kBlokus10NumPlayer, 0.0f);
-    for (int start = 0; start < kBlokus10NumPlayer;) {
-        int end = start + 1;
-        while (end < kBlokus10NumPlayer && scores[order[end]] == scores[order[start]]) { ++end; }
-
-        float target = 0.0f;
-        for (int rank = start; rank < end; ++rank) { target += rank_values[rank]; }
-        target /= static_cast<float>(end - start);
-        for (int rank = start; rank < end; ++rank) { ranks[order[rank]] = target; }
-        start = end;
-    }
-    return ranks;
 }
 
 std::vector<float> Blokus10EnvLoader::getActionFeatures(const int pos, utils::Rotation rotation /* = utils::Rotation::kRotationNone */) const

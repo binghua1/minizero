@@ -9,6 +9,8 @@ Network::Network()
     num_hidden_channels_ = hidden_channel_height_ = hidden_channel_width_ = -1;
     num_blocks_ = action_size_ = num_value_hidden_channels_ = discrete_value_size_ = -1;
     num_players_ = 2;
+    behavior_history_length_ = behavior_embedding_dim_ = 0;
+    supports_behavior_input_ = false;
     game_name_ = network_type_name_ = network_file_name_ = "";
 }
 
@@ -16,6 +18,9 @@ void Network::loadModel(const std::string& nn_file_name, const int gpu_id)
 {
     gpu_id_ = gpu_id;
     network_file_name_ = nn_file_name;
+    num_players_ = 2;
+    behavior_history_length_ = behavior_embedding_dim_ = 0;
+    supports_behavior_input_ = false;
 
     // load model weights
     try {
@@ -39,6 +44,11 @@ void Network::loadModel(const std::string& nn_file_name, const int gpu_id)
     num_value_hidden_channels_ = network_.get_method("get_num_value_hidden_channels")(dummy).toInt();
     discrete_value_size_ = network_.get_method("get_discrete_value_size")(dummy).toInt();
     if (network_.find_method("get_num_players")) { num_players_ = network_.get_method("get_num_players")(dummy).toInt(); }
+    if (network_.find_method("get_behavior_history_length")) {
+        supports_behavior_input_ = true;
+        behavior_history_length_ = network_.get_method("get_behavior_history_length")(dummy).toInt();
+        behavior_embedding_dim_ = network_.get_method("get_behavior_embedding_dim")(dummy).toInt();
+    }
     game_name_ = network_.get_method("get_game_name")(dummy).toString()->string();
     network_type_name_ = network_.get_method("get_type_name")(dummy).toString()->string();
 }
@@ -58,6 +68,8 @@ std::string Network::toString() const
     oss << "Number of value hidden channels: " << num_value_hidden_channels_ << std::endl;
     oss << "Discrete value size: " << discrete_value_size_ << std::endl;
     oss << "Number of players: " << num_players_ << std::endl;
+    oss << "Behavior history length: " << behavior_history_length_ << std::endl;
+    oss << "Behavior embedding dim: " << behavior_embedding_dim_ << std::endl;
     oss << "Game name: " << game_name_ << std::endl;
     oss << "Network type name: " << network_type_name_ << std::endl;
     oss << "Network file name: " << network_file_name_ << std::endl;

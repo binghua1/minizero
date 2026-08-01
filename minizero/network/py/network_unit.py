@@ -1,6 +1,7 @@
 import math
 import torch.nn as nn
 import torch.nn.functional as F
+import torch
 
 
 class ResidualBlock(nn.Module):
@@ -45,6 +46,41 @@ class PolicyNetwork(nn.Module):
         x = x.view(-1, self.num_output_channels * self.channel_height * self.channel_width)
         x = self.fc(x)
         return x
+
+
+class BehaviorEncoder(nn.Module):
+    def __init__(self, action_size, history_length, embedding_dim):
+        super(BehaviorEncoder, self).__init__()
+        self.action_size = action_size
+        self.history_length = history_length
+        self.embedding_dim = embedding_dim
+        self.action_embedding = nn.Embedding(action_size + 1, embedding_dim, padding_idx=action_size)
+        self.position_embedding = nn.Embedding(history_length, embedding_dim)
+        self.query = nn.Linear(embedding_dim, embedding_dim)
+        self.key = nn.Linear(embedding_dim, embedding_dim)
+        self.value = nn.Linear(embedding_dim, embedding_dim)
+        self.output = nn.Linear(embedding_dim, embedding_dim)
+
+    def forward(self, history):
+        batch_size = history.shape[0]
+        num_players = history.shape[1]
+        mask = history.ne(self.action_size)
+        positions = torch.arange(self.history_length, device=history.device).view(1, 1, -1)
+        tokens = self.action_embedding(history) + self.position_embedding(positions)
+        flat_tokens = tokens.view(batch_size * num_players, self.history_length, self.embedding_dim)
+        flat_mask = mask.view(batch_size * num_players, self.history_length)
+
+        query = self.query(flat_tokens)
+        key = self.key(flat_tokens)
+        value = self.value(flat_tokens)
+        attention = torch.matmul(query, key.transpose(1, 2)) / float(self.embedding_dim) ** 0.5
+        attention = attention.masked_fill(~flat_mask.unsqueeze(1), -10000.0)
+        attention = torch.softmax(attention, dim=2)
+        contextual = self.output(torch.matmul(attention, value))
+        contextual = contextual * flat_mask.unsqueeze(2).float()
+        denominator = flat_mask.sum(dim=1, keepdim=True).clamp(min=1).float()
+        pooled = contextual.sum(dim=1) / denominator
+        return pooled.view(batch_size, num_players, self.embedding_dim)
 
 
 class ValueNetwork(nn.Module):

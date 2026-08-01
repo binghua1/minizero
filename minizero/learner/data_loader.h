@@ -2,6 +2,7 @@
 
 #include "environment.h"
 #include "paralleler.h"
+#include <cstdint>
 #include <deque>
 #include <memory>
 #include <mutex>
@@ -26,7 +27,8 @@ public:
     float* action_features_;
     float* policy_;
     float* value_;
-    float* rank_;
+    int64_t* behavior_history_;
+    int64_t* to_play_;
     float* reward_;
     float* loss_scale_;
     int* sampled_index_;
@@ -40,6 +42,7 @@ public:
     int num_data_;
     float game_priority_sum_;
     std::deque<float> game_priorities_;
+    std::deque<int> game_num_data_;
     std::deque<std::deque<float>> position_priorities_;
     std::deque<EnvironmentLoader> env_loaders_;
 

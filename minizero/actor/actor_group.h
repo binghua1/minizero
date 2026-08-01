@@ -21,6 +21,7 @@ public:
 
     bool do_cpu_job_;
     int actor_index_;
+    int num_gpu_;
     std::mutex mutex_;
     std::vector<std::shared_ptr<BaseActor>> actors_;
     std::vector<std::shared_ptr<network::Network>> networks_;

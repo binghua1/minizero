@@ -16,7 +16,10 @@ def create_network(game_name="tietactoe",
                    num_value_hidden_channels=256,
                    discrete_value_size=601,
                    network_type_name="alphazero",
-                   num_players=2):
+                   num_players=2,
+                   use_behavior_conditioning=False,
+                   behavior_history_length=16,
+                   behavior_embedding_dim=32):
 
     network = None
     if network_type_name == "alphazero":
@@ -31,7 +34,10 @@ def create_network(game_name="tietactoe",
                                    action_size,
                                    num_value_hidden_channels,
                                    discrete_value_size,
-                                   num_players)
+                                   num_players,
+                                   use_behavior_conditioning,
+                                   behavior_history_length,
+                                   behavior_embedding_dim)
     elif network_type_name == "muzero":
         if "atari" in game_name:
             network = MuZeroAtariNetwork(game_name,

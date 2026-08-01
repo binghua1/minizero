@@ -7,6 +7,39 @@ MiniZero's multiplayer AlphaZero path uses an absolute utility vector at network
 - `actor_multiplayer_search_type=maxn` stores the utility component of the player who selected each edge, so every player maximizes their own value.
 - `actor_multiplayer_search_type=paranoid` stores the root player's utility on root-player edges and its negation on every opponent edge, so all opponents act as a coalition minimizing the root player's value.
 
+## Behavior-conditioned population training
+
+The optional population path trains one current policy against historical checkpoints without changing MaxN Q-values or adding Rank/lambda heads. Each self-play worker loads the current model and one historical model. A sampled subset of seats uses the current model for the whole game; only moves from those seats enter replay. Recent actions from every player are encoded by a shared attention encoder and fused into the current model's residual trunk with FiLM, so the policy and absolute vector-value losses can learn state-dependent responses to observed play styles.
+
+Enable it with the following additions to a multiplayer AlphaZero config:
+
+```text
+zero_use_population=true
+zero_population_size=2
+zero_population_snapshot_interval=10
+zero_population_rotation_interval=5
+zero_population_hard_ratio=0.7
+zero_population_temperature=0.2
+zero_population_current_seat_min=1
+zero_population_current_seat_max=3
+nn_use_behavior_conditioning=true
+nn_behavior_history_length=16
+nn_behavior_embedding_dim=32
+```
+
+For a four-player game, the seat range above samples one, two, or three current-model seats. The server increases the probability of lineups on which the current model has lower mean return. Old SGFs remain fully trainable because the per-move `TR` tag defaults to true when absent.
+
+`quick-run.sh` starts one self-play worker per GPU. With one GPU, use `-g 0`; the worker loads only the current model and one historical opponent on GPU 0:
+
+```bash
+tools/quick-run.sh train blokus10 blokus10_population.cfg 500 \
+  -n blokus10_behavior_population_01 -g 0 -c 8 -p 10001
+```
+
+If more GPUs become available, `-g 0123` starts four independent self-play workers and shards the historical opponents across them.
+
+The first historical opponent becomes available after `zero_population_snapshot_interval` iterations. A baseline checkpoint can warm-start the shared trunk; the new behavior modules and optimizer state are initialized from scratch.
+
 The neural network and terminal targets remain the same vector in both modes. Models trained with different search types should use separate training directories because their MCTS policy targets differ.
 
 ## Paper implementation audit

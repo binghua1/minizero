@@ -50,6 +50,14 @@ extern int zero_actor_intermediate_sequence_length;
 extern std::string zero_actor_ignored_command;
 extern bool zero_server_accept_different_model_games;
 extern int zero_display_latest_games;
+extern bool zero_use_population;
+extern int zero_population_size;
+extern int zero_population_snapshot_interval;
+extern int zero_population_rotation_interval;
+extern float zero_population_hard_ratio;
+extern float zero_population_temperature;
+extern int zero_population_current_seat_min;
+extern int zero_population_current_seat_max;
 
 // learner parameters
 extern bool learner_use_per;
@@ -66,7 +74,6 @@ extern float learner_learning_rate;
 extern float learner_momentum;
 extern float learner_weight_decay;
 extern float learner_value_loss_scale;
-extern float learner_rank_loss_scale;
 extern int learner_num_thread;
 
 // network parameters
@@ -75,6 +82,9 @@ extern int nn_num_blocks;
 extern int nn_num_hidden_channels;
 extern int nn_num_value_hidden_channels;
 extern std::string nn_type_name;
+extern bool nn_use_behavior_conditioning;
+extern int nn_behavior_history_length;
+extern int nn_behavior_embedding_dim;
 
 // environment parameters
 extern int env_board_size;

@@ -32,6 +32,9 @@ public:
     inline int getNumValueHiddenChannels() const { return num_value_hidden_channels_; }
     inline int getDiscreteValueSize() const { return discrete_value_size_; }
     inline int getNumPlayers() const { return num_players_; }
+    inline int getBehaviorHistoryLength() const { return behavior_history_length_; }
+    inline int getBehaviorEmbeddingDim() const { return behavior_embedding_dim_; }
+    inline bool supportsBehaviorInput() const { return supports_behavior_input_; }
     inline std::string getGameName() const { return game_name_; }
     inline std::string getNetworkTypeName() const { return network_type_name_; }
     inline std::string getNetworkFileName() const { return network_file_name_; }
@@ -51,6 +54,9 @@ protected:
     int num_value_hidden_channels_;
     int discrete_value_size_;
     int num_players_;
+    int behavior_history_length_;
+    int behavior_embedding_dim_;
+    bool supports_behavior_input_;
     std::string game_name_;
     std::string network_type_name_;
     std::string network_file_name_;

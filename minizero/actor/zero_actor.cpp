@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <cassert>
 #include <memory>
+#include <numeric>
+#include <sstream>
 #include <stdexcept>
 #include <tuple>
 #include <unordered_map>
@@ -25,6 +27,7 @@ void MCTSSearchData::clear()
 void ZeroActor::reset()
 {
     BaseActor::reset();
+    samplePopulationLineup();
     enable_resign_ = (utils::Random::randReal() < config::zero_disable_resign_ratio ? false : true);
 }
 
@@ -57,11 +60,15 @@ Action ZeroActor::think(bool with_play /*= false*/, bool display_board /*= false
 
 void ZeroActor::beforeNNEvaluation()
 {
+    activateNetworkForTurn();
     mcts_search_data_.node_path_ = selection();
     if (alphazero_network_) {
         Environment env_transition = getEnvironmentTransition(mcts_search_data_.node_path_);
         feature_rotation_ = config::actor_use_random_rotation_features ? static_cast<utils::Rotation>(utils::Random::randInt() % static_cast<int>(utils::Rotation::kRotateSize)) : utils::Rotation::kRotationNone;
-        nn_evaluation_batch_id_ = alphazero_network_->pushBack(env_transition.getFeatures(feature_rotation_));
+        nn_evaluation_batch_id_ = alphazero_network_->pushBack(
+            env_transition.getFeatures(feature_rotation_),
+            env_transition.getBehaviorHistory(alphazero_network_->getBehaviorHistoryLength(), feature_rotation_),
+            env::playerToIndex(env_transition.getTurn()));
     } else if (muzero_network_) {
         if (getMCTS()->getNumSimulation() == 0) { // initial inference for root node
             nn_evaluation_batch_id_ = muzero_network_->pushBackInitialData(env_.getFeatures());
@@ -140,10 +147,95 @@ void ZeroActor::setNetwork(const std::shared_ptr<network::Network>& network)
     }
 }
 
+void ZeroActor::setPopulationNetworks(int current_network_id,
+                                      const std::shared_ptr<network::Network>& current_network,
+                                      int historical_network_id,
+                                      const std::shared_ptr<network::Network>& historical_network,
+                                      int historical_iteration,
+                                      const std::vector<float>& current_seat_weights)
+{
+    if (!current_network) { throw std::runtime_error("population current network is missing"); }
+    current_network_id_ = current_network_id;
+    current_network_ = current_network;
+    historical_network_id_ = historical_network_id;
+    historical_network_ = historical_network;
+    historical_iteration_ = historical_iteration;
+    current_seat_weights_ = current_seat_weights;
+    samplePopulationLineup();
+    activateNetworkForTurn();
+}
+
+void ZeroActor::samplePopulationLineup()
+{
+    const int num_players = env_.getNumPlayer();
+    seat_model_ids_.assign(num_players, 0);
+    if (!historical_network_ || historical_iteration_ < 0 || num_players <= 2) { return; }
+
+    const int min_current = std::clamp(config::zero_population_current_seat_min, 1, num_players - 1);
+    const int max_current = std::clamp(config::zero_population_current_seat_max, min_current, num_players - 1);
+    const int num_choices = max_current - min_current + 1;
+    std::vector<float> weights = current_seat_weights_;
+    if (static_cast<int>(weights.size()) != num_choices ||
+        std::accumulate(weights.begin(), weights.end(), 0.0f) <= 0.0f) {
+        weights.assign(num_choices, 1.0f);
+    }
+    float draw = utils::Random::randReal(std::accumulate(weights.begin(), weights.end(), 0.0f));
+    int num_current = min_current;
+    for (int i = 0; i < num_choices; ++i) {
+        draw -= std::max(0.0f, weights[i]);
+        if (draw <= 0.0f) {
+            num_current = min_current + i;
+            break;
+        }
+    }
+
+    seat_model_ids_.assign(num_players, 1);
+    std::vector<int> seats(num_players);
+    std::iota(seats.begin(), seats.end(), 0);
+    for (int i = num_players - 1; i > 0; --i) {
+        const int j = static_cast<unsigned int>(utils::Random::randInt()) % (i + 1);
+        std::swap(seats[i], seats[j]);
+    }
+    for (int i = 0; i < num_current; ++i) { seat_model_ids_[seats[i]] = 0; }
+}
+
+void ZeroActor::activateNetworkForTurn()
+{
+    const int player_index = env::playerToIndex(env_.getTurn());
+    const bool use_history = historical_network_ && historical_iteration_ >= 0 &&
+                             player_index >= 0 && player_index < static_cast<int>(seat_model_ids_.size()) &&
+                             seat_model_ids_[player_index] == 1;
+    active_model_id_ = use_history ? 1 : 0;
+    active_network_id_ = use_history ? historical_network_id_ : current_network_id_;
+    setNetwork(use_history ? historical_network_ : current_network_);
+}
+
+std::string ZeroActor::getRecord(const std::unordered_map<std::string, std::string>& tags) const
+{
+    auto population_tags = tags;
+    if (historical_iteration_ >= 0) {
+        std::ostringstream lineup;
+        for (size_t i = 0; i < seat_model_ids_.size(); ++i) {
+            if (i > 0) { lineup << ","; }
+            lineup << seat_model_ids_[i];
+        }
+        population_tags["LM"] = lineup.str();
+        population_tags["HI"] = std::to_string(historical_iteration_);
+    }
+    return BaseActor::getRecord(population_tags);
+}
+
 std::vector<std::pair<std::string, std::string>> ZeroActor::getActionInfo() const
 {
     // ignore recording mcts action info if there is no search
-    if (getMCTS()->getRootNode()->getCount() > 0) { return BaseActor::getActionInfo(); }
+    if (getMCTS()->getRootNode()->getCount() > 0) {
+        auto action_info = BaseActor::getActionInfo();
+        if (historical_iteration_ >= 0) {
+            action_info.push_back({"MI", std::to_string(active_model_id_)});
+            action_info.push_back({"TR", active_model_id_ == 0 ? "1" : "0"});
+        }
+        return action_info;
+    }
     return {};
 }
 

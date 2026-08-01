@@ -31,6 +31,12 @@ int main()
     assert(loaded.loadFromString(loader.toString()));
     assert(loaded.getActionPairs().size() == 7);
     assert(loaded.getValue(0) == std::vector<float>({1.0f, -1.0f, -1.0f}));
+    assert(loaded.getNumPlayer() == 3);
+    assert(loaded.getPlayerAtPosition(4) == 1);
+    assert(loaded.getBehaviorHistory(4, 2) == std::vector<int64_t>({0, 1, 15, 5, 15, 10}));
+    loaded.setActionPairInfo(1, "TR", "0");
+    assert(loaded.isPositionTrainable(0));
+    assert(!loaded.isPositionTrainable(1));
 
     MCTS mcts(8);
     mcts.reset();

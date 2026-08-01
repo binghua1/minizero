@@ -40,6 +40,7 @@ public:
     virtual bool isResign() const = 0;
     virtual std::string getSearchInfo() const = 0;
     virtual void setNetwork(const std::shared_ptr<network::Network>& network) = 0;
+    virtual int getNNEvaluationNetworkID() const = 0;
     virtual std::shared_ptr<Search> createSearch() = 0;
 
 protected:

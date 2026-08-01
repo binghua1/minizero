@@ -1,10 +1,13 @@
 #include "zero_server.h"
+#include "environment.h"
 #include "git_info.h"
 #include "random.h"
 #include "utils.h"
 #include <algorithm>
 #include <boost/algorithm/string.hpp>
 #include <cassert>
+#include <cmath>
+#include <filesystem>
 #include <iostream>
 #include <limits>
 #include <numeric>
@@ -271,6 +274,7 @@ void ZeroServer::selfPlay()
         shared_data_.logger_.getSelfPlayFileStream() << sp_data.game_record_ << (sp_data.is_terminal_ ? " #" : "") << std::endl;
         ++num_collect_game;
         total_data_length += sp_data.data_length_;
+        if (sp_data.is_terminal_ && config::zero_use_population) { recordPopulationResult(sp_data); }
         if (sp_data.is_terminal_) {
             game_lengths.push_back(sp_data.game_length_);
             if (sp_data.returns_.size() > 1) {
@@ -307,6 +311,17 @@ void ZeroServer::selfPlay()
     stopJob("sp");
     if (config::zero_num_games_per_iteration > 0) { shared_data_.logger_.getSelfPlayFileStream().close(); }
     shared_data_.logger_.addTrainingLog("[SelfPlay] Finished.");
+    if (config::zero_use_population) {
+        for (const auto& item : population_seat_return_stats_) {
+            const int historical_iteration = static_cast<int>(item.first >> 32);
+            const int num_current = static_cast<int>(item.first & 0xffffffffULL);
+            shared_data_.logger_.addTrainingLog(
+                "[Population Cumulative Avg. Return] opponent=" + std::to_string(historical_iteration) +
+                " current_seats=" + std::to_string(num_current) +
+                " games=" + std::to_string(item.second.second) +
+                " return=" + std::to_string(item.second.first / item.second.second));
+        }
+    }
     if (!game_lengths.empty()) {
         shared_data_.logger_.addTrainingLog("[SelfPlay # Finished Games] " + std::to_string(game_lengths.size()));
         shared_data_.logger_.addTrainingLog("[SelfPlay Min. Game Lengths] " + std::to_string(*std::min_element(game_lengths.begin(), game_lengths.end())));
@@ -343,14 +358,103 @@ void ZeroServer::selfPlay()
 
 void ZeroServer::broadcastSelfPlayJob()
 {
+    const std::vector<int> population_iterations = getPopulationIterations();
     boost::lock_guard<boost::mutex> lock(worker_mutex_);
+    size_t self_play_worker_index = 0;
     for (auto& worker : connections_) {
         if (!worker->isIdle() || worker->getType() != "sp") { continue; }
         worker->setIdle(false);
         worker->write("load_model " + config::zero_training_directory + "/model/weight_iter_" + std::to_string(shared_data_.getModelIetration()) + ".pt");
+        if (!population_iterations.empty()) {
+            const size_t rotation = iteration_ / std::max(1, config::zero_population_rotation_interval);
+            const size_t opponent_index = (self_play_worker_index + rotation) % population_iterations.size();
+            const int opponent_iteration = population_iterations[opponent_index];
+            const std::vector<float> seat_weights = getPopulationSeatWeights(opponent_iteration);
+            std::ostringstream weight_stream;
+            for (size_t i = 0; i < seat_weights.size(); ++i) {
+                if (i > 0) { weight_stream << ","; }
+                weight_stream << seat_weights[i];
+            }
+            worker->write("load_population " + config::zero_training_directory + "/model/weight_iter_" +
+                          std::to_string(opponent_iteration) + ".pt " + std::to_string(opponent_iteration) + " " + weight_stream.str());
+        } else {
+            worker->write("clear_population");
+        }
         worker->write("reset_actors");
         worker->write("start");
+        ++self_play_worker_index;
     }
+}
+
+std::vector<int> ZeroServer::getPopulationIterations()
+{
+    std::vector<int> iterations;
+    if (!config::zero_use_population || config::zero_population_size <= 0) { return iterations; }
+    const int current = shared_data_.getModelIetration();
+    const int interval = std::max(1, config::zero_population_snapshot_interval) *
+                         std::max(1, config::learner_training_step);
+    for (int candidate = current - interval;
+         candidate >= 0 && static_cast<int>(iterations.size()) < config::zero_population_size;
+         candidate -= interval) {
+        const std::string path = config::zero_training_directory + "/model/weight_iter_" + std::to_string(candidate) + ".pt";
+        if (std::filesystem::exists(path)) { iterations.push_back(candidate); }
+    }
+    return iterations;
+}
+
+std::vector<float> ZeroServer::getPopulationSeatWeights(int historical_iteration) const
+{
+    const int min_seats = config::zero_population_current_seat_min;
+    const int max_seats = config::zero_population_current_seat_max;
+    const int count = std::max(1, max_seats - min_seats + 1);
+    std::vector<float> hard_weights(count, 1.0f);
+    bool has_statistics = false;
+    for (int i = 0; i < count; ++i) {
+        const int64_t key = (static_cast<int64_t>(historical_iteration) << 32) |
+                            static_cast<uint32_t>(min_seats + i);
+        auto it = population_seat_return_stats_.find(key);
+        if (it == population_seat_return_stats_.end() || it->second.second == 0) { continue; }
+        const double mean_return = it->second.first / it->second.second;
+        hard_weights[i] = std::exp(static_cast<float>(-mean_return / std::max(1e-6f, config::zero_population_temperature)));
+        has_statistics = true;
+    }
+    if (!has_statistics) { return std::vector<float>(count, 1.0f / count); }
+
+    const float hard_sum = std::accumulate(hard_weights.begin(), hard_weights.end(), 0.0f);
+    const float hard_ratio = std::clamp(config::zero_population_hard_ratio, 0.0f, 1.0f);
+    for (float& weight : hard_weights) {
+        weight = (1.0f - hard_ratio) / count + hard_ratio * weight / hard_sum;
+    }
+    return hard_weights;
+}
+
+void ZeroServer::recordPopulationResult(const ZeroSelfPlayData& sp_data)
+{
+    EnvironmentLoader env_loader;
+    if (!env_loader.loadFromString(sp_data.game_record_)) { return; }
+    const std::string lineup_string = env_loader.getTag("LM");
+    const std::string historical_iteration_string = env_loader.getTag("HI");
+    if (lineup_string.empty() || historical_iteration_string.empty()) { return; }
+
+    std::istringstream lineup_stream(lineup_string);
+    std::string token;
+    int player_index = 0;
+    int num_current = 0;
+    double current_return_sum = 0.0;
+    while (std::getline(lineup_stream, token, ',')) {
+        if (token == "0" && player_index < static_cast<int>(sp_data.returns_.size())) {
+            ++num_current;
+            current_return_sum += sp_data.returns_[player_index];
+        }
+        ++player_index;
+    }
+    if (num_current == 0) { return; }
+    const int historical_iteration = std::stoi(historical_iteration_string);
+    const int64_t key = (static_cast<int64_t>(historical_iteration) << 32) |
+                        static_cast<uint32_t>(num_current);
+    auto& stat = population_seat_return_stats_[key];
+    stat.first += current_return_sum / num_current;
+    ++stat.second;
 }
 
 void ZeroServer::optimization()

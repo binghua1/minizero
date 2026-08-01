@@ -48,7 +48,7 @@ public:
         return oss.str();
     }
 
-    int pushBack(std::vector<float> features)
+    int pushBack(std::vector<float> features, std::vector<int64_t> behavior_history = {}, int64_t to_play = 0)
     {
         assert(static_cast<int>(features.size()) == getNumInputChannels() * getInputChannelHeight() * getInputChannelWidth());
         assert(batch_size_ < kReserved_batch_size);
@@ -60,13 +60,27 @@ public:
             tensor_input_.resize(batch_size_);
         }
         tensor_input_[index] = torch::from_blob(features.data(), {1, getNumInputChannels(), getInputChannelHeight(), getInputChannelWidth()}).clone();
+        if (supportsBehaviorInput()) {
+            const int history_length = std::max(1, getBehaviorHistoryLength());
+            if (behavior_history.empty()) {
+                behavior_history.assign(getNumPlayers() * history_length, getActionSize());
+            }
+            assert(static_cast<int>(behavior_history.size()) == getNumPlayers() * history_length);
+            tensor_behavior_history_[index] = torch::from_blob(behavior_history.data(), {1, getNumPlayers(), history_length}, torch::kInt64).clone();
+            tensor_to_play_[index] = torch::tensor({to_play}, torch::kInt64);
+        }
         return index;
     }
 
     std::vector<std::shared_ptr<NetworkOutput>> forward()
     {
         assert(batch_size_ > 0);
-        auto forward_result = network_.forward(std::vector<torch::jit::IValue>{torch::cat(tensor_input_).to(getDevice())}).toGenericDict();
+        std::vector<torch::jit::IValue> inputs{torch::cat(tensor_input_).to(getDevice())};
+        if (supportsBehaviorInput()) {
+            inputs.push_back(torch::cat(tensor_behavior_history_).to(getDevice()));
+            inputs.push_back(torch::cat(tensor_to_play_).to(getDevice()));
+        }
+        auto forward_result = network_.forward(inputs).toGenericDict();
 
         auto policy_output = forward_result.at("policy").toTensor().to(at::kCPU);
         auto policy_logits_output = forward_result.at("policy_logit").toTensor().to(at::kCPU);
@@ -128,11 +142,17 @@ protected:
         batch_size_ = 0;
         tensor_input_.clear();
         tensor_input_.reserve(kReserved_batch_size);
+        tensor_behavior_history_.clear();
+        tensor_behavior_history_.resize(kReserved_batch_size);
+        tensor_to_play_.clear();
+        tensor_to_play_.resize(kReserved_batch_size);
     }
 
     int batch_size_;
     std::mutex mutex_;
     std::vector<torch::Tensor> tensor_input_;
+    std::vector<torch::Tensor> tensor_behavior_history_;
+    std::vector<torch::Tensor> tensor_to_play_;
 
     const int kReserved_batch_size = 4096;
 };

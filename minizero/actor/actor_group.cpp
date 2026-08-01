@@ -3,9 +3,12 @@
 #include "create_actor.h"
 #include "create_network.h"
 #include "random.h"
+#include "zero_actor.h"
 #include <algorithm>
 #include <iostream>
 #include <memory>
+#include <sstream>
+#include <stdexcept>
 #include <string>
 #include <torch/cuda.h>
 #include <utility>
@@ -25,6 +28,17 @@ void ThreadSharedData::outputGame(const std::shared_ptr<BaseActor>& actor)
 {
     int game_length = actor->getEnvironment().getActionHistory().size();
     std::pair<int, int> data_range = calculateTrainingDataRange(actor);
+    int data_length = 0;
+    const auto& action_info_history = actor->getActionInfoHistory();
+    for (int pos = data_range.first; pos <= data_range.second; ++pos) {
+        bool trainable = true;
+        if (pos >= 0 && pos < static_cast<int>(action_info_history.size())) {
+            for (const auto& info : action_info_history[pos]) {
+                if (info.first == "TR" && info.second == "0") { trainable = false; }
+            }
+        }
+        data_length += trainable ? 1 : 0;
+    }
     const Environment& environment = actor->getEnvironment();
     const bool is_resign = !actor->isEnvTerminal();
     std::ostringstream game_return;
@@ -38,7 +52,7 @@ void ThreadSharedData::outputGame(const std::shared_ptr<BaseActor>& actor)
     bool is_terminal = (config::zero_actor_intermediate_sequence_length == 0 || actor->isEnvTerminal());
     oss << "SelfPlay "
         << (is_terminal ? "true" : "false") << " "                                                                         // is terminal
-        << (data_range.second - data_range.first + 1) << " "                                                               // data length
+        << data_length << " "                                                                                              // data length
         << game_length << " "                                                                                              // game length
         << game_return.str() << " "                                                                                        // return(s)
         << actor->getRecord({{"DLEN", std::to_string(data_range.first) + "-" + std::to_string(data_range.second)}}) << " " // game record
@@ -92,7 +106,7 @@ bool SlaveThread::doCPUJob()
     if (actor_id >= getSharedData()->actors_.size()) { return false; }
 
     std::shared_ptr<BaseActor>& actor = getSharedData()->actors_[actor_id];
-    int network_id = actor_id % getSharedData()->networks_.size();
+    int network_id = actor->getNNEvaluationNetworkID();
     int network_output_id = actor->getNNEvaluationBatchIndex();
     if (network_output_id >= 0) {
         assert(network_output_id < static_cast<int>(getSharedData()->network_outputs_[network_id].size()));
@@ -157,7 +171,9 @@ void ActorGroup::run()
 
 void ActorGroup::initialize()
 {
-    int num_threads = std::max(static_cast<int>(torch::cuda::device_count()), config::zero_num_threads);
+    const int num_gpu = std::min(static_cast<int>(torch::cuda::device_count()), config::zero_num_parallel_games);
+    const int required_gpu_threads = config::zero_use_population ? 2 * num_gpu : num_gpu;
+    int num_threads = std::max(required_gpu_threads, config::zero_num_threads);
     createSlaveThreads(num_threads);
     createNeuralNetworks();
     createActors();
@@ -177,6 +193,7 @@ void ActorGroup::createNeuralNetworks()
 {
     int num_networks = std::min(static_cast<int>(torch::cuda::device_count()), config::zero_num_parallel_games);
     assert(num_networks > 0);
+    getSharedData()->num_gpu_ = num_networks;
     getSharedData()->networks_.resize(num_networks);
     getSharedData()->network_outputs_.resize(num_networks);
     for (int gpu_id = 0; gpu_id < num_networks; ++gpu_id) {
@@ -190,7 +207,26 @@ void ActorGroup::createActors()
     std::shared_ptr<Network>& network = getSharedData()->networks_[0];
     uint64_t tree_node_size = static_cast<uint64_t>(config::actor_num_simulation + 1) * network->getActionSize();
     for (int i = 0; i < config::zero_num_parallel_games; ++i) {
-        getSharedData()->actors_.emplace_back(createActor(tree_node_size, getSharedData()->networks_[i % getSharedData()->networks_.size()]));
+        const int network_id = i % getSharedData()->num_gpu_;
+        auto actor = createActor(tree_node_size, getSharedData()->networks_[network_id]);
+        auto zero_actor = std::dynamic_pointer_cast<ZeroActor>(actor);
+        assert(zero_actor);
+        zero_actor->setPopulationNetworks(network_id, getSharedData()->networks_[network_id], -1, nullptr, -1, {});
+        getSharedData()->actors_.emplace_back(actor);
+    }
+    if (config::zero_use_population) {
+        const int num_players = getSharedData()->actors_.front()->getEnvironment().getNumPlayer();
+        if (num_players <= 2 || config::nn_type_name != "alphazero") {
+            throw std::runtime_error("population training requires a multiplayer AlphaZero environment");
+        }
+        if (config::zero_population_size <= 0 || config::zero_population_snapshot_interval <= 0 ||
+            config::zero_population_rotation_interval <= 0 || config::zero_population_temperature <= 0.0f ||
+            config::zero_population_hard_ratio < 0.0f || config::zero_population_hard_ratio > 1.0f ||
+            config::zero_population_current_seat_min < 1 ||
+            config::zero_population_current_seat_max >= num_players ||
+            config::zero_population_current_seat_min > config::zero_population_current_seat_max) {
+            throw std::runtime_error("invalid multiplayer population configuration");
+        }
     }
 }
 
@@ -237,7 +273,49 @@ void ActorGroup::handleCommand(const std::string& command_prefix, const std::str
         std::vector<std::string> args = utils::stringToVector(command);
         assert(args.size() == 2);
         config::nn_file_name = args[1];
-        for (auto& network : getSharedData()->networks_) { network->loadModel(config::nn_file_name, network->getGPUID()); }
+        for (int network_id = 0; network_id < getSharedData()->num_gpu_; ++network_id) {
+            auto& network = getSharedData()->networks_[network_id];
+            network->loadModel(config::nn_file_name, network->getGPUID());
+        }
+    } else if (command_prefix == "load_population") {
+        std::cerr << "[command] " << command << std::endl;
+        std::vector<std::string> args = utils::stringToVector(command);
+        if (args.size() != 4) { throw std::runtime_error("load_population expects: model_path iteration seat_weights"); }
+        const std::string& model_path = args[1];
+        const int historical_iteration = std::stoi(args[2]);
+        std::vector<float> seat_weights;
+        std::stringstream weight_stream(args[3]);
+        std::string weight;
+        while (std::getline(weight_stream, weight, ',')) { seat_weights.push_back(std::stof(weight)); }
+
+        const int history_offset = getSharedData()->num_gpu_;
+        if (static_cast<int>(getSharedData()->networks_.size()) == history_offset) {
+            for (int gpu_id = 0; gpu_id < getSharedData()->num_gpu_; ++gpu_id) {
+                getSharedData()->networks_.push_back(createNetwork(model_path, gpu_id));
+                getSharedData()->network_outputs_.emplace_back();
+            }
+        } else {
+            for (int gpu_id = 0; gpu_id < getSharedData()->num_gpu_; ++gpu_id) {
+                getSharedData()->networks_[history_offset + gpu_id]->loadModel(model_path, gpu_id);
+            }
+        }
+        for (size_t actor_id = 0; actor_id < getSharedData()->actors_.size(); ++actor_id) {
+            const int gpu_id = actor_id % getSharedData()->num_gpu_;
+            auto zero_actor = std::dynamic_pointer_cast<ZeroActor>(getSharedData()->actors_[actor_id]);
+            zero_actor->setPopulationNetworks(gpu_id,
+                                              getSharedData()->networks_[gpu_id],
+                                              history_offset + gpu_id,
+                                              getSharedData()->networks_[history_offset + gpu_id],
+                                              historical_iteration,
+                                              seat_weights);
+        }
+    } else if (command_prefix == "clear_population") {
+        std::cerr << "[command] " << command << std::endl;
+        for (size_t actor_id = 0; actor_id < getSharedData()->actors_.size(); ++actor_id) {
+            const int gpu_id = actor_id % getSharedData()->num_gpu_;
+            auto zero_actor = std::dynamic_pointer_cast<ZeroActor>(getSharedData()->actors_[actor_id]);
+            zero_actor->setPopulationNetworks(gpu_id, getSharedData()->networks_[gpu_id], -1, nullptr, -1, {});
+        }
     } else if (command_prefix == "update_config") {
         std::cerr << "[command] " << command << std::endl;
         assert(command.find(" ") != std::string::npos);

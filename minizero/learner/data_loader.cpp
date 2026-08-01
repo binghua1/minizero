@@ -18,6 +18,7 @@ ReplayBuffer::ReplayBuffer()
     num_data_ = 0;
     game_priority_sum_ = 0.0f;
     game_priorities_.clear();
+    game_num_data_.clear();
     position_priorities_.clear();
     env_loaders_.clear();
 }
@@ -27,26 +28,31 @@ void ReplayBuffer::addData(const EnvironmentLoader& env_loader)
     std::pair<int, int> data_range = env_loader.getDataRange();
     std::deque<float> position_priorities(data_range.second + 1, 0.0f);
     float game_priority = 0.0f;
+    int num_trainable_data = 0;
     for (int i = data_range.first; i <= data_range.second; ++i) {
+        if (!env_loader.isPositionTrainable(i)) { continue; }
         position_priorities[i] = std::pow((config::learner_use_per ? env_loader.getPriority(i) : 1.0f), config::learner_per_alpha);
         game_priority += position_priorities[i];
+        ++num_trainable_data;
     }
+    if (num_trainable_data == 0) { return; }
 
     std::lock_guard<std::mutex> lock(mutex_);
 
     // add new data to replay buffer
-    num_data_ += (data_range.second - data_range.first + 1);
+    num_data_ += num_trainable_data;
     position_priorities_.push_back(position_priorities);
     game_priorities_.push_back(game_priority);
+    game_num_data_.push_back(num_trainable_data);
     env_loaders_.push_back(env_loader);
 
     // remove old data if replay buffer is full
     const size_t replay_buffer_max_size = config::zero_replay_buffer * config::zero_num_games_per_iteration;
     while (position_priorities_.size() > replay_buffer_max_size) {
-        data_range = env_loaders_.front().getDataRange();
-        num_data_ -= (data_range.second - data_range.first + 1);
+        num_data_ -= game_num_data_.front();
         position_priorities_.pop_front();
         game_priorities_.pop_front();
+        game_num_data_.pop_front();
         env_loaders_.pop_front();
     }
 }
@@ -145,7 +151,10 @@ void DataLoaderThread::setAlphaZeroTrainingData(int batch_index)
     std::vector<float> features = env_loader.getFeatures(pos, rotation);
     std::vector<float> policy = env_loader.getPolicy(pos, rotation);
     std::vector<float> value = env_loader.getValue(pos);
-    std::vector<float> rank = env_loader.getRank(pos);
+    std::vector<int64_t> behavior_history;
+    if (config::nn_use_behavior_conditioning) {
+        behavior_history = env_loader.getBehaviorHistory(pos, config::nn_behavior_history_length, rotation);
+    }
 
     // write data to data_ptr
     getSharedData()->getDataPtr()->loss_scale_[batch_index] = loss_scale;
@@ -154,7 +163,10 @@ void DataLoaderThread::setAlphaZeroTrainingData(int batch_index)
     std::copy(features.begin(), features.end(), getSharedData()->getDataPtr()->features_ + features.size() * batch_index);
     std::copy(policy.begin(), policy.end(), getSharedData()->getDataPtr()->policy_ + policy.size() * batch_index);
     std::copy(value.begin(), value.end(), getSharedData()->getDataPtr()->value_ + value.size() * batch_index);
-    std::copy(rank.begin(), rank.end(), getSharedData()->getDataPtr()->rank_ + rank.size() * batch_index);
+    if (config::nn_use_behavior_conditioning) {
+        std::copy(behavior_history.begin(), behavior_history.end(), getSharedData()->getDataPtr()->behavior_history_ + behavior_history.size() * batch_index);
+        getSharedData()->getDataPtr()->to_play_[batch_index] = env_loader.getPlayerAtPosition(pos);
+    }
 }
 
 void DataLoaderThread::setMuZeroTrainingData(int batch_index)
@@ -214,6 +226,14 @@ DataLoader::DataLoader(const std::string& conf_file_name)
         if (config::nn_type_name != "alphazero") { throw std::runtime_error("multiplayer training currently supports AlphaZero only"); }
         if (env.getDiscreteValueSize() != 1) { throw std::runtime_error("multiplayer categorical values are not supported yet"); }
         if (config::learner_use_per) { throw std::runtime_error("multiplayer prioritized replay is not supported yet"); }
+    }
+    if (config::nn_use_behavior_conditioning) {
+        if (env.getNumPlayer() <= 2 || config::nn_type_name != "alphazero") {
+            throw std::runtime_error("behavior conditioning requires a multiplayer AlphaZero environment");
+        }
+        if (config::nn_behavior_history_length <= 0 || config::nn_behavior_embedding_dim <= 0) {
+            throw std::runtime_error("behavior history length and embedding dimension must be positive");
+        }
     }
 }
 
