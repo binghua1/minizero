@@ -109,7 +109,10 @@ bool SlaveThread::doCPUJob()
     int network_id = actor->getNNEvaluationNetworkID();
     int network_output_id = actor->getNNEvaluationBatchIndex();
     if (network_output_id >= 0) {
-        assert(network_output_id < static_cast<int>(getSharedData()->network_outputs_[network_id].size()));
+        if (network_id < 0 || network_id >= static_cast<int>(getSharedData()->network_outputs_.size()) ||
+            network_output_id >= static_cast<int>(getSharedData()->network_outputs_[network_id].size())) {
+            throw std::runtime_error("pending inference output does not match its network batch");
+        }
         actor->afterNNEvaluation(getSharedData()->network_outputs_[network_id][network_output_id]);
         if (actor->isSearchDone()) { handleSearchDone(actor_id); }
     }

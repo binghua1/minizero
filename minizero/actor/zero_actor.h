@@ -40,7 +40,7 @@ public:
     bool isResign() const override { return enable_resign_ && getMCTS()->isResign(mcts_search_data_.selected_node_); }
     std::string getSearchInfo() const override { return mcts_search_data_.search_info_; }
     void setNetwork(const std::shared_ptr<network::Network>& network) override;
-    int getNNEvaluationNetworkID() const override { return active_network_id_; }
+    int getNNEvaluationNetworkID() const override { return nn_evaluation_network_id_; }
     void setPopulationNetworks(int current_network_id,
                                const std::shared_ptr<network::Network>& current_network,
                                int historical_network_id,
@@ -78,6 +78,7 @@ protected:
     std::shared_ptr<network::AlphaZeroNetwork> alphazero_network_;
     std::shared_ptr<network::MuZeroNetwork> muzero_network_;
     int active_network_id_ = 0;
+    int nn_evaluation_network_id_ = 0;
     int active_model_id_ = 0;
     int current_network_id_ = 0;
     int historical_network_id_ = -1;

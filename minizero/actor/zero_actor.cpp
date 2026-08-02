@@ -61,6 +61,7 @@ Action ZeroActor::think(bool with_play /*= false*/, bool display_board /*= false
 void ZeroActor::beforeNNEvaluation()
 {
     activateNetworkForTurn();
+    nn_evaluation_network_id_ = active_network_id_;
     mcts_search_data_.node_path_ = selection();
     if (alphazero_network_) {
         Environment env_transition = getEnvironmentTransition(mcts_search_data_.node_path_);

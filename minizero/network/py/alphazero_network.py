@@ -127,7 +127,7 @@ class AlphaZeroNetwork(nn.Module):
             batch_index = torch.arange(state.shape[0], device=state.device)
             current_token = player_tokens[batch_index, to_play]
             attention = (self.behavior_query(current_token).unsqueeze(1) * self.behavior_key(player_tokens)).sum(dim=2)
-            current_mask = torch.nn.functional.one_hot(to_play, num_classes=self.num_players).bool()
+            current_mask = torch.nn.functional.one_hot(to_play, num_classes=self.num_players).to(torch.bool)
             attention = torch.softmax(attention.masked_fill(current_mask, -10000.0), dim=1)
             opponent_token = (attention.unsqueeze(2) * player_tokens).sum(dim=1)
             gamma, beta = self.behavior_film(torch.cat((current_token, opponent_token), dim=1)).chunk(2, dim=1)
