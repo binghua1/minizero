@@ -202,6 +202,7 @@ void ZeroActor::samplePopulationLineup()
 
 void ZeroActor::activateNetworkForTurn()
 {
+    if (!current_network_) { return; }
     const int player_index = env::playerToIndex(env_.getTurn());
     const bool use_history = historical_network_ && historical_iteration_ >= 0 &&
                              player_index >= 0 && player_index < static_cast<int>(seat_model_ids_.size()) &&
