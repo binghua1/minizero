@@ -21,6 +21,7 @@ extern float actor_mcts_think_time_limit;
 extern bool actor_mcts_value_rescale;
 extern char actor_mcts_value_flipping_player;
 extern std::string actor_multiplayer_search_type;
+extern float actor_rank_utility_weight;
 extern bool actor_select_action_by_count;
 extern bool actor_select_action_by_softmax_count;
 extern float actor_select_action_softmax_temperature;
@@ -58,6 +59,7 @@ extern float zero_population_hard_ratio;
 extern float zero_population_temperature;
 extern int zero_population_current_seat_min;
 extern int zero_population_current_seat_max;
+extern bool zero_population_balance_seats;
 
 // learner parameters
 extern bool learner_use_per;
@@ -74,6 +76,7 @@ extern float learner_learning_rate;
 extern float learner_momentum;
 extern float learner_weight_decay;
 extern float learner_value_loss_scale;
+extern float learner_rank_loss_scale;
 extern int learner_num_thread;
 
 // network parameters
@@ -82,9 +85,11 @@ extern int nn_num_blocks;
 extern int nn_num_hidden_channels;
 extern int nn_num_value_hidden_channels;
 extern std::string nn_type_name;
+extern bool nn_use_rank_head;
 extern bool nn_use_behavior_conditioning;
 extern int nn_behavior_history_length;
 extern int nn_behavior_embedding_dim;
+extern float nn_behavior_history_dropout;
 
 // environment parameters
 extern int env_board_size;

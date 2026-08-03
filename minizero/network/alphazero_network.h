@@ -15,15 +15,19 @@ class AlphaZeroNetworkOutput : public NetworkOutput {
 public:
     float value_;
     std::vector<float> values_;
+    std::vector<float> rank_values_;
     std::vector<float> policy_;
     std::vector<float> policy_logits_;
+    bool has_rank_;
 
     AlphaZeroNetworkOutput(int policy_size, int num_players)
     {
         value_ = 0.0f;
         values_.resize(num_players, 0.0f);
+        rank_values_.resize(num_players, 0.0f);
         policy_.resize(policy_size, 0.0f);
         policy_logits_.resize(policy_size, 0.0f);
+        has_rank_ = false;
     }
 };
 
@@ -85,11 +89,17 @@ public:
         auto policy_output = forward_result.at("policy").toTensor().to(at::kCPU);
         auto policy_logits_output = forward_result.at("policy_logit").toTensor().to(at::kCPU);
         auto value_output = forward_result.at("value").toTensor().to(at::kCPU);
+        const bool has_rank_output = forward_result.contains("rank");
+        torch::Tensor rank_output;
+        if (has_rank_output) { rank_output = forward_result.at("rank").toTensor().to(at::kCPU); }
         assert(policy_output.numel() == batch_size_ * getActionSize());
         assert(policy_logits_output.numel() == batch_size_ * getActionSize());
         const int value_output_size = (getNumPlayers() > 2 && getDiscreteValueSize() == 1 ? getNumPlayers() : getDiscreteValueSize());
         if (value_output.numel() != batch_size_ * value_output_size) {
             throw std::runtime_error("AlphaZero value output shape does not match the configured player count");
+        }
+        if (has_rank_output && rank_output.numel() != batch_size_ * getNumPlayers()) {
+            throw std::runtime_error("AlphaZero rank output shape does not match the configured player count");
         }
 
         const int policy_size = getActionSize();
@@ -105,6 +115,13 @@ public:
             std::copy(policy_logits_output.data_ptr<float>() + i * policy_size,
                       policy_logits_output.data_ptr<float>() + (i + 1) * policy_size,
                       alphazero_network_output->policy_logits_.begin());
+
+            if (has_rank_output) {
+                std::copy(rank_output.data_ptr<float>() + i * getNumPlayers(),
+                          rank_output.data_ptr<float>() + (i + 1) * getNumPlayers(),
+                          alphazero_network_output->rank_values_.begin());
+                alphazero_network_output->has_rank_ = true;
+            }
 
             // value
             if (getDiscreteValueSize() == 1) {

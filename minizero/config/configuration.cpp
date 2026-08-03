@@ -19,6 +19,7 @@ float actor_mcts_think_time_limit = 0;
 bool actor_mcts_value_rescale = false;
 char actor_mcts_value_flipping_player = 'W';
 std::string actor_multiplayer_search_type = "maxn";
+float actor_rank_utility_weight = 0.0f;
 bool actor_select_action_by_count = false;
 bool actor_select_action_by_softmax_count = true;
 float actor_select_action_softmax_temperature = 1.0f;
@@ -56,6 +57,7 @@ float zero_population_hard_ratio = 0.7f;
 float zero_population_temperature = 0.2f;
 int zero_population_current_seat_min = 1;
 int zero_population_current_seat_max = 3;
+bool zero_population_balance_seats = false;
 
 // learner parameters
 bool learner_use_per = false;
@@ -72,6 +74,7 @@ float learner_learning_rate = 0.02;
 float learner_momentum = 0.9;
 float learner_weight_decay = 0.0001;
 float learner_value_loss_scale = 1.0f;
+float learner_rank_loss_scale = 0.0f;
 int learner_num_thread = 8;
 
 // network parameters
@@ -80,9 +83,11 @@ int nn_num_blocks = 1;
 int nn_num_hidden_channels = 256;
 int nn_num_value_hidden_channels = 256;
 std::string nn_type_name = "alphazero";
+bool nn_use_rank_head = false;
 bool nn_use_behavior_conditioning = false;
 int nn_behavior_history_length = 16;
 int nn_behavior_embedding_dim = 32;
+float nn_behavior_history_dropout = 0.0f;
 
 // environment parameters
 int env_board_size = 0;
@@ -117,7 +122,8 @@ void setConfiguration(ConfigureLoader& cl)
     cl.addParameter("actor_mcts_value_rescale", actor_mcts_value_rescale, "true for games whose rewards are not bounded in [-1, 1], e.g., Atari games", "Actor");             // ref: MZ
     cl.addParameter("actor_mcts_think_batch_size", actor_mcts_think_batch_size, "the MCTS selection batch size; only works when running console", "Actor");
     cl.addParameter("actor_mcts_think_time_limit", actor_mcts_think_time_limit, "the MCTS time limit in seconds, 0 represents disabling time limit (only uses actor_num_simulation); only works when running console", "Actor");
-    cl.addParameter("actor_multiplayer_search_type", actor_multiplayer_search_type, "the multiplayer tree-search backup type: maxn or paranoid", "Actor");
+    cl.addParameter("actor_multiplayer_search_type", actor_multiplayer_search_type, "the multiplayer tree-search backup type: maxn, paranoid, or rank", "Actor");
+    cl.addParameter("actor_rank_utility_weight", actor_rank_utility_weight, "weight for mixing multiplayer score value with rank value during rank search", "Actor");
     cl.addParameter("actor_select_action_by_count", actor_select_action_by_count, "true for selecting the action by the maximum MCTS count; should not be true together with actor_select_action_by_softmax_count", "Actor");
     cl.addParameter("actor_select_action_by_softmax_count", actor_select_action_by_softmax_count, "true for selecting the action by the propotion of MCTS count; should not be true together with actor_select_action_by_count", "Actor");
     cl.addParameter("actor_select_action_softmax_temperature", actor_select_action_softmax_temperature, "the softmax temperature when using actor_select_action_by_softmax_count", "Actor");
@@ -155,6 +161,7 @@ void setConfiguration(ConfigureLoader& cl)
     cl.addParameter("zero_population_temperature", zero_population_temperature, "temperature for hard-lineup sampling from current-model returns", "Zero");
     cl.addParameter("zero_population_current_seat_min", zero_population_current_seat_min, "minimum number of seats controlled by the current model in a population game", "Zero");
     cl.addParameter("zero_population_current_seat_max", zero_population_current_seat_max, "maximum number of seats controlled by the current model in a population game", "Zero");
+    cl.addParameter("zero_population_balance_seats", zero_population_balance_seats, "sample k current seats with probability proportional to 1/k so each lineup contributes equal trainable-position mass", "Zero");
 
     // learner parameters
     cl.addParameter("learner_use_per", learner_use_per, "true for enabling Prioritized Experience Replay", "Learner");                                                              // ref: PER
@@ -171,6 +178,7 @@ void setConfiguration(ConfigureLoader& cl)
     cl.addParameter("learner_momentum", learner_momentum, "hyperparameter for momentum; only for sgd", "Learner");
     cl.addParameter("learner_weight_decay", learner_weight_decay, "hyperparameter for weight decay; usually 0.0001 for sgd, 0 for adam, 0.01 for adamw", "Learner");
     cl.addParameter("learner_value_loss_scale", learner_value_loss_scale, "hyperparameter for scaling of the value loss", "Learner");
+    cl.addParameter("learner_rank_loss_scale", learner_rank_loss_scale, "hyperparameter for scaling of the multiplayer final-rank auxiliary loss", "Learner");
     cl.addParameter("learner_num_thread", learner_num_thread, "the number of threads for training", "Learner");
 
     // network parameters
@@ -179,9 +187,11 @@ void setConfiguration(ConfigureLoader& cl)
     cl.addParameter("nn_num_hidden_channels", nn_num_hidden_channels, "hyperparameter for the model; the size of the hidden channels in residual blocks", "Network");               // ref: AGZ
     cl.addParameter("nn_num_value_hidden_channels", nn_num_value_hidden_channels, "hyperparameter for the model; the size of the hidden channels in the value network", "Network"); // ref: AGZ
     cl.addParameter("nn_type_name", nn_type_name, "the type of training algorithm and network: alphazero/muzero", "Network");
+    cl.addParameter("nn_use_rank_head", nn_use_rank_head, "true for adding a multiplayer final-rank prediction head", "Network");
     cl.addParameter("nn_use_behavior_conditioning", nn_use_behavior_conditioning, "true for conditioning multiplayer AlphaZero on recent per-player actions", "Network");
     cl.addParameter("nn_behavior_history_length", nn_behavior_history_length, "the number of recent actions encoded for each player", "Network");
     cl.addParameter("nn_behavior_embedding_dim", nn_behavior_embedding_dim, "the hidden size of the shared player-behavior encoder", "Network");
+    cl.addParameter("nn_behavior_history_dropout", nn_behavior_history_dropout, "probability of dropping the behavior context during training", "Network");
 
     // environment parameters
     cl.addParameter("env_board_size", env_board_size, "the size of board", "Environment");

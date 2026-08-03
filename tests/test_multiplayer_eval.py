@@ -431,6 +431,41 @@ class MultiplayerEvalTest(unittest.TestCase):
             self.assertEqual(len(games), 12)
             self.assertTrue(all(not game["error"] for game in games))
 
+    def test_auto_mode_supports_fixed_rank_utility(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            training = temp / "rank_run"
+            (training / "model").mkdir(parents=True)
+            (training / "run.cfg").write_text(
+                "actor_num_simulation=50\nactor_rank_utility_weight=0.75\n"
+            )
+            (training / "model" / "weight_iter_100.pt").touch()
+            output = temp / "evaluation"
+
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(ARENA),
+                    "auto",
+                    "tictacmo",
+                    str(training),
+                    "--search-types", "maxn", "rank",
+                    "--rank-weight", "0.75",
+                    "--executable", str(FAKE_ENGINE),
+                    "--output", str(output),
+                    "--dry-run",
+                ],
+                cwd=REPO_ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            manifest = json.loads((output / "arena.json").read_text())
+            agents = {agent["name"]: agent for agent in manifest["agents"]}
+            self.assertIn("actor_rank_utility_weight=0", agents["maxn"]["command"][-1])
+            self.assertIn("actor_rank_utility_weight=0.75", agents["rank"]["command"][-1])
+
     def test_all_permutations_and_summaries(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp = Path(temp_dir)

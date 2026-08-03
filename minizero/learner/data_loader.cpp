@@ -151,6 +151,7 @@ void DataLoaderThread::setAlphaZeroTrainingData(int batch_index)
     std::vector<float> features = env_loader.getFeatures(pos, rotation);
     std::vector<float> policy = env_loader.getPolicy(pos, rotation);
     std::vector<float> value = env_loader.getValue(pos);
+    std::vector<float> rank = env_loader.getRank(pos);
     std::vector<int64_t> behavior_history;
     if (config::nn_use_behavior_conditioning) {
         behavior_history = env_loader.getBehaviorHistory(pos, config::nn_behavior_history_length, rotation);
@@ -163,6 +164,7 @@ void DataLoaderThread::setAlphaZeroTrainingData(int batch_index)
     std::copy(features.begin(), features.end(), getSharedData()->getDataPtr()->features_ + features.size() * batch_index);
     std::copy(policy.begin(), policy.end(), getSharedData()->getDataPtr()->policy_ + policy.size() * batch_index);
     std::copy(value.begin(), value.end(), getSharedData()->getDataPtr()->value_ + value.size() * batch_index);
+    std::copy(rank.begin(), rank.end(), getSharedData()->getDataPtr()->rank_ + rank.size() * batch_index);
     if (config::nn_use_behavior_conditioning) {
         std::copy(behavior_history.begin(), behavior_history.end(), getSharedData()->getDataPtr()->behavior_history_ + behavior_history.size() * batch_index);
         getSharedData()->getDataPtr()->to_play_[batch_index] = env_loader.getPlayerAtPosition(pos);

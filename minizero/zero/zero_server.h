@@ -16,6 +16,8 @@
 
 namespace minizero::zero {
 
+std::vector<float> calculatePopulationSeatBaseWeights(int min_seats, int max_seats, bool balance_seats);
+
 class ZeroLogger {
 public:
     ZeroLogger() {}

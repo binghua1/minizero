@@ -852,6 +852,11 @@ def create_auto_manifest(args, repo_root, models, configs, executable):
             "program_auto_seed": "false",
             **overrides,
         }
+        if search_type == "rank":
+            if args.rank_weight is not None:
+                agent_overrides["actor_rank_utility_weight"] = str(args.rank_weight)
+        else:
+            agent_overrides["actor_rank_utility_weight"] = "0"
         conf_str = ":".join(f"{key}={value}" for key, value in agent_overrides.items())
         agents.append({
             "name": search_type,
@@ -1098,12 +1103,15 @@ def auto_main(argv):
     parser.add_argument("--model", help="model path, file name, or iteration number (default: latest iteration)")
     parser.add_argument("--maxn-model", help="model used by the MaxN agent (default: --model)")
     parser.add_argument("--paranoid-model", help="model used by the Paranoid agent (default: --model)")
+    parser.add_argument("--rank-model", help="model used by the Rank Utility agent (default: --model)")
     parser.add_argument("--conf-file", help="config path (default: newest *.cfg in the training folder)")
     parser.add_argument("--maxn-conf-file", help="config used by the MaxN agent")
     parser.add_argument("--paranoid-conf-file", help="config used by the Paranoid agent")
+    parser.add_argument("--rank-conf-file", help="config used by the Rank Utility agent")
     parser.add_argument("--executable", help="engine executable (default: build/GAME/minizero_GAME)")
     parser.add_argument("--output", help="output directory (default: TRAINING_DIR/evaluation/MODEL_SEARCHES)")
-    parser.add_argument("--search-types", nargs="+", default=["maxn", "paranoid"], choices=("maxn", "paranoid"))
+    parser.add_argument("--search-types", nargs="+", default=["maxn", "paranoid"], choices=("maxn", "paranoid", "rank"))
+    parser.add_argument("--rank-weight", type=float, help="rank contribution for Rank Utility search; must be in (0, 1]")
     parser.add_argument("--num-players", type=int)
     parser.add_argument("--num-simulations", type=int, help="override actor_num_simulation")
     parser.add_argument("--noise", action="store_true", help="enable Dirichlet noise for varied reproducible games")
@@ -1129,6 +1137,8 @@ def auto_main(argv):
     positive = (args.games_per_seating, args.command_timeout, args.omp_num_threads, args.num_threads)
     if any(value <= 0 for value in positive) or (args.num_simulations is not None and args.num_simulations <= 0):
         parser.error("game, timeout, thread, and simulation counts must be positive")
+    if args.rank_weight is not None and not 0.0 < args.rank_weight <= 1.0:
+        parser.error("--rank-weight must be in (0, 1]")
 
     repo_root = Path(__file__).resolve().parents[1]
     training_dir = Path(args.training_dir).resolve()
@@ -1161,6 +1171,13 @@ def auto_main(argv):
         parser.error("agent configs use different actor_num_simulation values; set --num-simulations explicitly")
     effective_simulations = args.num_simulations or (next(iter(config_simulations)) if config_simulations else None)
     simulation_label = f"_n{effective_simulations}" if effective_simulations else ""
+    effective_rank_weight = args.rank_weight
+    if effective_rank_weight is None and "rank" in args.search_types:
+        config_weight = read_config_value(configs["rank"], "actor_rank_utility_weight")
+        effective_rank_weight = float(config_weight) if config_weight is not None else 0.0
+    if "rank" in args.search_types and effective_rank_weight <= 0.0:
+        parser.error("Rank Utility evaluation requires --rank-weight or a positive actor_rank_utility_weight in its config")
+    rank_label = f"_lambda{effective_rank_weight:g}" if effective_rank_weight is not None else ""
     noise_label = "_noise" if args.noise else ""
     if len(set(models.values())) == 1:
         arena_label = f"{next(iter(models.values())).stem}_{search_label}"
@@ -1174,7 +1191,7 @@ def auto_main(argv):
     output_dir = (
         Path(args.output).resolve()
         if args.output
-        else training_dir / "evaluation" / f"{arena_label}{simulation_label}{noise_label}"
+        else training_dir / "evaluation" / f"{arena_label}{simulation_label}{rank_label}{noise_label}"
     )
     output_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = output_dir / "arena.json"
@@ -1378,7 +1395,7 @@ def self_eval_main(argv):
     parser.add_argument("--games", type=int, default=100, help="total games for each checkpoint pair")
     parser.add_argument("-s", "--start-index", type=int, default=0)
     parser.add_argument("-d", "--output", help="result directory (default: TRAINING_DIR/self_eval)")
-    parser.add_argument("--search-type", choices=("maxn", "paranoid"), help="default: value from config, or maxn")
+    parser.add_argument("--search-type", choices=("maxn", "paranoid", "rank"), help="default: value from config, or maxn")
     parser.add_argument("--num-players", type=int)
     parser.add_argument("--num-simulations", type=int)
     noise_group = parser.add_mutually_exclusive_group()
@@ -1522,7 +1539,7 @@ def checkpoint_sweep_main(argv):
                         help="total seat-balanced games for each reference/checkpoint pair")
     parser.add_argument("--conf-file", help="evaluation config (default: newest *.cfg in the training folder)")
     parser.add_argument("-d", "--output", help="result directory")
-    parser.add_argument("--search-type", choices=("maxn", "paranoid"),
+    parser.add_argument("--search-type", choices=("maxn", "paranoid", "rank"),
                         help="default: value from config, or maxn")
     parser.add_argument("--num-players", type=int)
     parser.add_argument("--num-simulations", type=int)

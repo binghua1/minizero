@@ -27,6 +27,7 @@ class MinizeroDadaLoader:
         self.value_output_size = py.get_nn_value_output_size()
         self.behavior_history = np.zeros(py.get_batch_size() * py.get_nn_num_players() * py.get_nn_behavior_history_length(), dtype=np.int64)
         self.to_play = np.zeros(py.get_batch_size(), dtype=np.int64)
+        self.rank = np.zeros(py.get_batch_size() * self.value_output_size, dtype=np.float32)
         self.value_accumulator = np.ones(1) if py.get_nn_discrete_value_size() == 1 else np.arange(-int(py.get_nn_discrete_value_size() / 2), int(py.get_nn_discrete_value_size() / 2) + 1)
         if py.get_nn_type_name() == "alphazero":
             self.action_features = None
@@ -51,7 +52,7 @@ class MinizeroDadaLoader:
                 self.data_list.pop(0)
 
     def sample_data(self, device='cpu'):
-        self.data_loader.sample_data(self.features, self.action_features, self.policy, self.value, self.behavior_history, self.to_play, self.reward, self.loss_scale, self.sampled_index)
+        self.data_loader.sample_data(self.features, self.action_features, self.policy, self.value, self.rank, self.behavior_history, self.to_play, self.reward, self.loss_scale, self.sampled_index)
         features = torch.FloatTensor(self.features).view(py.get_batch_size(), py.get_nn_num_input_channels(), py.get_nn_input_channel_height(), py.get_nn_input_channel_width()).to(device)
         action_features = None if self.action_features is None else torch.FloatTensor(self.action_features).view(py.get_batch_size(),
                                                                                                                  -1,
@@ -61,15 +62,17 @@ class MinizeroDadaLoader:
         policy = torch.FloatTensor(self.policy).view(py.get_batch_size(), -1, py.get_nn_action_size()).to(device)
         if py.get_nn_type_name() == "alphazero":
             value = torch.FloatTensor(self.value).view(py.get_batch_size(), 1, self.value_output_size).to(device)
+            rank = torch.FloatTensor(self.rank).view(py.get_batch_size(), 1, self.value_output_size).to(device)
         else:
             value = torch.FloatTensor(self.value).view(py.get_batch_size(), -1, py.get_nn_discrete_value_size()).to(device)
+            rank = None
         reward = None if self.reward is None else torch.FloatTensor(self.reward).view(py.get_batch_size(), -1, py.get_nn_discrete_value_size()).to(device)
         loss_scale = torch.FloatTensor(self.loss_scale / np.amax(self.loss_scale)).to(device)
         sampled_index = self.sampled_index
         behavior_history = torch.LongTensor(self.behavior_history).view(py.get_batch_size(), py.get_nn_num_players(), py.get_nn_behavior_history_length()).to(device)
         to_play = torch.LongTensor(self.to_play).to(device)
 
-        return features, action_features, policy, value, behavior_history, to_play, reward, loss_scale, sampled_index
+        return features, action_features, policy, value, rank, behavior_history, to_play, reward, loss_scale, sampled_index
 
     def update_priority(self, sampled_index, batch_values):
         batch_values = (batch_values * self.value_accumulator).sum(axis=1)
@@ -100,9 +103,11 @@ class Model:
                                       py.get_nn_discrete_value_size(),
                                       py.get_nn_type_name(),
                                       py.get_nn_num_players(),
+                                      py.use_rank_head(),
                                       py.use_behavior_conditioning(),
                                       py.get_nn_behavior_history_length(),
-                                      py.get_nn_behavior_embedding_dim())
+                                      py.get_nn_behavior_embedding_dim(),
+                                      py.get_nn_behavior_history_dropout())
         self.network.to(self.device)
         if py.get_optimizer().lower() == "adam":
             self.optimizer = optim.Adam(self.network.parameters(),
@@ -125,7 +130,7 @@ class Model:
             try:
                 self.network.load_state_dict(snapshot['network'])
             except RuntimeError:
-                if not py.use_behavior_conditioning():
+                if not py.use_behavior_conditioning() and not py.use_rank_head():
                     raise
                 current_state = self.network.state_dict()
                 compatible_state = {
@@ -138,7 +143,7 @@ class Model:
                 ]
                 missing_non_behavior = [
                     key for key in current_state
-                    if key not in compatible_state and not key.startswith("behavior_")
+                    if key not in compatible_state and not key.startswith("behavior_") and not key.startswith("rank.")
                 ]
                 if incompatible_existing or missing_non_behavior:
                     raise
@@ -189,6 +194,13 @@ def calculate_player_value_losses(network_output, label_value, loss_scale):
     return (value_error * loss_scale.view(-1, 1)).mean(dim=0)
 
 
+def calculate_rank_loss(network_output, label_rank, loss_scale):
+    if label_rank is None or "rank" not in network_output or py.get_rank_loss_scale() <= 0:
+        return None
+    rank_error = nn.functional.mse_loss(network_output["rank"], label_rank, reduction='none')
+    return (rank_error.view(rank_error.shape[0], -1).mean(dim=1) * loss_scale).mean()
+
+
 def add_training_info(training_info, key, value):
     if key not in training_info:
         training_info[key] = 0
@@ -212,17 +224,22 @@ def train(model, training_dir, data_loader, start_iter, end_iter):
     training_info = {}
     for i in range(1, py.get_training_step() + 1):
         model.optimizer.zero_grad()
-        features, action_features, label_policy, label_value, behavior_history, to_play, label_reward, loss_scale, sampled_index = data_loader.sample_data(model.device)
+        features, action_features, label_policy, label_value, label_rank, behavior_history, to_play, label_reward, loss_scale, sampled_index = data_loader.sample_data(model.device)
 
         if py.get_nn_type_name() == "alphazero":
             network_output = model.network(features, behavior_history, to_play)
             loss_policy, loss_value, _ = calculate_loss(network_output, label_policy[:, 0], label_value[:, 0], None, loss_scale)
             loss = loss_policy + py.get_value_loss_scale() * loss_value
+            loss_rank = calculate_rank_loss(network_output, label_rank[:, 0], loss_scale)
+            if loss_rank is not None:
+                loss += py.get_rank_loss_scale() * loss_rank
 
             # record training info
             add_training_info(training_info, 'loss_policy', loss_policy.item())
             add_training_info(training_info, 'accuracy_policy', calculate_accuracy(network_output["policy_logit"], label_policy[:, 0], py.get_batch_size()))
             add_training_info(training_info, 'loss_value', loss_value.item())
+            if loss_rank is not None:
+                add_training_info(training_info, 'loss_rank', loss_rank.item())
             if py.get_nn_num_players() > 2:
                 player_value_losses = calculate_player_value_losses(network_output, label_value[:, 0], loss_scale)
                 for player_index, player_value_loss in enumerate(player_value_losses):

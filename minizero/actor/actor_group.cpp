@@ -227,7 +227,8 @@ void ActorGroup::createActors()
             config::zero_population_hard_ratio < 0.0f || config::zero_population_hard_ratio > 1.0f ||
             config::zero_population_current_seat_min < 1 ||
             config::zero_population_current_seat_max >= num_players ||
-            config::zero_population_current_seat_min > config::zero_population_current_seat_max) {
+            config::zero_population_current_seat_min > config::zero_population_current_seat_max ||
+            config::nn_behavior_history_dropout < 0.0f || config::nn_behavior_history_dropout > 1.0f) {
             throw std::runtime_error("invalid multiplayer population configuration");
         }
     }

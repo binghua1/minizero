@@ -204,6 +204,16 @@ void MCTS::backup(const std::vector<MCTSNode*>& node_path, const env::PlayerValu
     }
 }
 
+void MCTS::backup(const std::vector<MCTSNode*>& node_path, const env::PlayerValues& values, const env::PlayerValues& rank_values, float rank_weight)
+{
+    assert(rank_weight >= 0.0f && rank_weight <= 1.0f);
+    env::PlayerValues utilities{};
+    for (int player = 0; player < env::kMaxNumPlayers; ++player) {
+        utilities[player] = (1.0f - rank_weight) * values[player] + rank_weight * rank_values[player];
+    }
+    backup(node_path, utilities);
+}
+
 MCTSNode* MCTS::selectChildByPUCTScore(const MCTSNode* node) const
 {
     assert(node && !node->isLeaf());

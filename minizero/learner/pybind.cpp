@@ -46,9 +46,12 @@ PYBIND11_MODULE(minizero_py, m)
     m.def("get_momentum", []() { return config::learner_momentum; });
     m.def("get_weight_decay", []() { return config::learner_weight_decay; });
     m.def("get_value_loss_scale", []() { return config::learner_value_loss_scale; });
+    m.def("get_rank_loss_scale", []() { return config::learner_rank_loss_scale; });
+    m.def("use_rank_head", []() { return config::nn_use_rank_head; });
     m.def("use_behavior_conditioning", []() { return config::nn_use_behavior_conditioning; });
     m.def("get_nn_behavior_history_length", []() { return config::nn_behavior_history_length; });
     m.def("get_nn_behavior_embedding_dim", []() { return config::nn_behavior_embedding_dim; });
+    m.def("get_nn_behavior_history_dropout", []() { return config::nn_behavior_history_dropout; });
     m.def("get_game_name", []() { return getEnvInstance().name(); });
     m.def("get_nn_num_input_channels", []() { return getEnvInstance().getNumInputChannels(); });
     m.def("get_nn_input_channel_height", []() { return getEnvInstance().getInputChannelHeight(); });
@@ -79,11 +82,12 @@ PYBIND11_MODULE(minizero_py, m)
             },
             py::call_guard<py::gil_scoped_release>())
         .def(
-            "sample_data", [](learner::DataLoader& data_loader, py::array_t<float>& features, py::array_t<float>& action_features, py::array_t<float>& policy, py::array_t<float>& value, py::array_t<int64_t>& behavior_history, py::array_t<int64_t>& to_play, py::array_t<float>& reward, py::array_t<float>& loss_scale, py::array_t<int>& sampled_index) {
+            "sample_data", [](learner::DataLoader& data_loader, py::array_t<float>& features, py::array_t<float>& action_features, py::array_t<float>& policy, py::array_t<float>& value, py::array_t<float>& rank, py::array_t<int64_t>& behavior_history, py::array_t<int64_t>& to_play, py::array_t<float>& reward, py::array_t<float>& loss_scale, py::array_t<int>& sampled_index) {
                 data_loader.getSharedData()->getDataPtr()->features_ = static_cast<float*>(features.request().ptr);
                 data_loader.getSharedData()->getDataPtr()->action_features_ = static_cast<float*>(action_features.request().ptr);
                 data_loader.getSharedData()->getDataPtr()->policy_ = static_cast<float*>(policy.request().ptr);
                 data_loader.getSharedData()->getDataPtr()->value_ = static_cast<float*>(value.request().ptr);
+                data_loader.getSharedData()->getDataPtr()->rank_ = static_cast<float*>(rank.request().ptr);
                 data_loader.getSharedData()->getDataPtr()->behavior_history_ = static_cast<int64_t*>(behavior_history.request().ptr);
                 data_loader.getSharedData()->getDataPtr()->to_play_ = static_cast<int64_t*>(to_play.request().ptr);
                 data_loader.getSharedData()->getDataPtr()->reward_ = static_cast<float*>(reward.request().ptr);

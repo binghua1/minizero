@@ -18,6 +18,18 @@
 
 namespace minizero::zero {
 
+std::vector<float> calculatePopulationSeatBaseWeights(int min_seats, int max_seats, bool balance_seats)
+{
+    const int count = std::max(1, max_seats - min_seats + 1);
+    std::vector<float> weights(count, 1.0f);
+    if (balance_seats) {
+        for (int i = 0; i < count; ++i) { weights[i] = 1.0f / static_cast<float>(min_seats + i); }
+    }
+    const float sum = std::accumulate(weights.begin(), weights.end(), 0.0f);
+    for (float& weight : weights) { weight /= sum; }
+    return weights;
+}
+
 using namespace minizero;
 using namespace minizero::utils;
 
@@ -407,7 +419,13 @@ std::vector<float> ZeroServer::getPopulationSeatWeights(int historical_iteration
     const int min_seats = config::zero_population_current_seat_min;
     const int max_seats = config::zero_population_current_seat_max;
     const int count = std::max(1, max_seats - min_seats + 1);
-    std::vector<float> hard_weights(count, 1.0f);
+    const std::vector<float> base_weights = calculatePopulationSeatBaseWeights(
+        min_seats, max_seats, config::zero_population_balance_seats);
+
+    const float hard_ratio = std::clamp(config::zero_population_hard_ratio, 0.0f, 1.0f);
+    if (hard_ratio <= 0.0f) { return base_weights; }
+
+    std::vector<float> hard_weights = base_weights;
     bool has_statistics = false;
     for (int i = 0; i < count; ++i) {
         const int64_t key = (static_cast<int64_t>(historical_iteration) << 32) |
@@ -415,15 +433,18 @@ std::vector<float> ZeroServer::getPopulationSeatWeights(int historical_iteration
         auto it = population_seat_return_stats_.find(key);
         if (it == population_seat_return_stats_.end() || it->second.second == 0) { continue; }
         const double mean_return = it->second.first / it->second.second;
-        hard_weights[i] = std::exp(static_cast<float>(-mean_return / std::max(1e-6f, config::zero_population_temperature)));
+        const float hardness = std::clamp(
+            static_cast<float>(-mean_return / std::max(1e-6f, config::zero_population_temperature)),
+            -20.0f,
+            20.0f);
+        hard_weights[i] *= std::exp(hardness);
         has_statistics = true;
     }
-    if (!has_statistics) { return std::vector<float>(count, 1.0f / count); }
+    if (!has_statistics) { return base_weights; }
 
     const float hard_sum = std::accumulate(hard_weights.begin(), hard_weights.end(), 0.0f);
-    const float hard_ratio = std::clamp(config::zero_population_hard_ratio, 0.0f, 1.0f);
-    for (float& weight : hard_weights) {
-        weight = (1.0f - hard_ratio) / count + hard_ratio * weight / hard_sum;
+    for (int i = 0; i < count; ++i) {
+        hard_weights[i] = (1.0f - hard_ratio) * base_weights[i] + hard_ratio * hard_weights[i] / hard_sum;
     }
     return hard_weights;
 }

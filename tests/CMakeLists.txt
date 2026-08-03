@@ -1,6 +1,7 @@
 if(GAME_TYPE STREQUAL "TICTACMO")
     add_executable(multiplayer_test multiplayer_test.cpp)
     target_link_libraries(multiplayer_test actor environment zero config utils)
+    target_compile_options(multiplayer_test PRIVATE -UNDEBUG)
     add_test(NAME multiplayer_test COMMAND multiplayer_test)
 
     find_package(Python3 COMPONENTS Interpreter REQUIRED)
@@ -9,6 +10,20 @@ if(GAME_TYPE STREQUAL "TICTACMO")
         COMMAND ${Python3_EXECUTABLE} -m unittest -v tests/test_multiplayer_eval.py
         WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
     )
+    add_test(
+        NAME behavior_conditioning_test
+        COMMAND ${Python3_EXECUTABLE} -m unittest -v tests/test_behavior_conditioning.py
+        WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+    )
+endif()
+
+if(GAME_TYPE STREQUAL "BLOKUS10")
+    add_executable(multiplayer_test multiplayer_test.cpp)
+    target_link_libraries(multiplayer_test actor environment zero config utils)
+    target_compile_options(multiplayer_test PRIVATE -UNDEBUG)
+    add_test(NAME multiplayer_test COMMAND multiplayer_test)
+
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
     add_test(
         NAME behavior_conditioning_test
         COMMAND ${Python3_EXECUTABLE} -m unittest -v tests/test_behavior_conditioning.py

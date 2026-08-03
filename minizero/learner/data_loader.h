@@ -27,6 +27,7 @@ public:
     float* action_features_;
     float* policy_;
     float* value_;
+    float* rank_;
     int64_t* behavior_history_;
     int64_t* to_play_;
     float* reward_;

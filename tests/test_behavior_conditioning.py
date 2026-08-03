@@ -14,9 +14,11 @@ class BehaviorConditioningTest(unittest.TestCase):
         return AlphaZeroNetwork(
             "tictacmo", 6, 3, 5, 16, 3, 5, 1, 15, 32, 1,
             num_players=3,
+            use_rank_head=True,
             use_behavior_conditioning=True,
             behavior_history_length=4,
             behavior_embedding_dim=8,
+            behavior_history_dropout=0.1,
         )
 
     def test_forward_and_torchscript_contract(self):
@@ -31,11 +33,14 @@ class BehaviorConditioningTest(unittest.TestCase):
         output = model(state, history, to_play)
         self.assertEqual(output["policy"].shape, (2, 15))
         self.assertEqual(output["value"].shape, (2, 3))
+        self.assertEqual(output["rank"].shape, (2, 3))
         self.assertEqual(model.get_behavior_history_length(), 4)
+        self.assertTrue(model.get_use_rank_head())
 
         scripted = torch.jit.script(model)
         scripted_output = scripted(state, history, to_play)
         self.assertEqual(scripted_output["value"].shape, (2, 3))
+        self.assertEqual(scripted_output["rank"].shape, (2, 3))
 
 
 if __name__ == "__main__":

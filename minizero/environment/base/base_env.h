@@ -364,6 +364,33 @@ public:
     }
 
     virtual std::vector<float> getValue(const int pos) const { return (pos < static_cast<int>(action_pairs_.size()) ? std::vector<float>{std::stof(action_pairs_[pos].second["V"])} : std::vector<float>{0.0f}); }
+    virtual std::vector<float> getRank(const int pos) const
+    {
+        const std::vector<float> values = getValue(pos);
+        const int num_players = static_cast<int>(values.size());
+        if (num_players <= 1) { return std::vector<float>(num_players, 0.0f); }
+
+        std::vector<int> order(num_players);
+        for (int player = 0; player < num_players; ++player) { order[player] = player; }
+        std::sort(order.begin(), order.end(), [&values](int lhs, int rhs) {
+            if (values[lhs] == values[rhs]) { return lhs < rhs; }
+            return values[lhs] > values[rhs];
+        });
+
+        std::vector<float> ranks(num_players, 0.0f);
+        for (int start = 0; start < num_players;) {
+            int end = start + 1;
+            while (end < num_players && values[order[end]] == values[order[start]]) { ++end; }
+            float tied_rank = 0.0f;
+            for (int rank = start; rank < end; ++rank) {
+                tied_rank += 1.0f - 2.0f * static_cast<float>(rank) / static_cast<float>(num_players - 1);
+            }
+            tied_rank /= static_cast<float>(end - start);
+            for (int rank = start; rank < end; ++rank) { ranks[order[rank]] = tied_rank; }
+            start = end;
+        }
+        return ranks;
+    }
     virtual std::vector<float> getReward(const int pos) const { return (pos < static_cast<int>(action_pairs_.size()) ? std::vector<float>{std::stof(action_pairs_[pos].second["R"])} : std::vector<float>{0.0f}); }
     virtual bool setActionPairInfo(const int pos, const std::string& tag, const std::string value)
     {
