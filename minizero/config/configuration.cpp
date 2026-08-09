@@ -58,6 +58,20 @@ float zero_population_temperature = 0.2f;
 int zero_population_current_seat_min = 1;
 int zero_population_current_seat_max = 3;
 bool zero_population_balance_seats = false;
+bool zero_use_league = false;
+int zero_league_refresh_interval = 20;
+float zero_league_rank_weight = 0.75f;
+float zero_league_self_ratio = 0.30f;
+float zero_league_champion_ratio = 0.20f;
+float zero_league_frontier_ratio = 0.25f;
+float zero_league_hard_ratio = 0.15f;
+float zero_league_coverage_ratio = 0.10f;
+int zero_league_min_games = 32;
+float zero_league_confidence_scale = 1.0f;
+float zero_league_champion_margin = 0.0f;
+bool zero_league_use_deviation = true;
+float zero_league_deviation_margin = 0.05f;
+float zero_league_deviation_lineup_ratio = 0.5f;
 
 // learner parameters
 bool learner_use_per = false;
@@ -162,6 +176,20 @@ void setConfiguration(ConfigureLoader& cl)
     cl.addParameter("zero_population_current_seat_min", zero_population_current_seat_min, "minimum number of seats controlled by the current model in a population game", "Zero");
     cl.addParameter("zero_population_current_seat_max", zero_population_current_seat_max, "maximum number of seats controlled by the current model in a population game", "Zero");
     cl.addParameter("zero_population_balance_seats", zero_population_balance_seats, "sample k current seats with probability proportional to 1/k so each lineup contributes equal trainable-position mass", "Zero");
+    cl.addParameter("zero_use_league", zero_use_league, "use a frozen, role-scheduled historical league instead of round-robin population sampling", "Zero");
+    cl.addParameter("zero_league_refresh_interval", zero_league_refresh_interval, "number of outer training iterations between active historical-pool refreshes", "Zero");
+    cl.addParameter("zero_league_rank_weight", zero_league_rank_weight, "rank weight in the empirical league utility (1-lambda)*return+lambda*rank", "Zero");
+    cl.addParameter("zero_league_self_ratio", zero_league_self_ratio, "target fraction of self-play worker assignments using only the current model", "Zero");
+    cl.addParameter("zero_league_champion_ratio", zero_league_champion_ratio, "target fraction of worker assignments playing the gated champion", "Zero");
+    cl.addParameter("zero_league_frontier_ratio", zero_league_frontier_ratio, "target fraction of worker assignments playing opponents closest to equal utility", "Zero");
+    cl.addParameter("zero_league_hard_ratio", zero_league_hard_ratio, "target fraction of worker assignments playing the lowest-confidence-bound opponent", "Zero");
+    cl.addParameter("zero_league_coverage_ratio", zero_league_coverage_ratio, "target fraction of worker assignments playing the least-observed active opponent", "Zero");
+    cl.addParameter("zero_league_min_games", zero_league_min_games, "minimum observations required by confidence-based league decisions", "Zero");
+    cl.addParameter("zero_league_confidence_scale", zero_league_confidence_scale, "standard-error multiplier used by hard selection, champion gates, and deviation tests", "Zero");
+    cl.addParameter("zero_league_champion_margin", zero_league_champion_margin, "minimum confidence-adjusted utility required to replace the champion", "Zero");
+    cl.addParameter("zero_league_use_deviation", zero_league_use_deviation, "enable restricted historical-deviation feedback; false keeps league steps 1-5 only", "Zero");
+    cl.addParameter("zero_league_deviation_margin", zero_league_deviation_margin, "minimum confidence-adjusted historical utility treated as a profitable restricted deviation", "Zero");
+    cl.addParameter("zero_league_deviation_lineup_ratio", zero_league_deviation_lineup_ratio, "mixture weight emphasizing one historical deviator against otherwise current-model seats", "Zero");
 
     // learner parameters
     cl.addParameter("learner_use_per", learner_use_per, "true for enabling Prioritized Experience Replay", "Learner");                                                              // ref: PER

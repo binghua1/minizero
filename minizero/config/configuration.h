@@ -60,6 +60,20 @@ extern float zero_population_temperature;
 extern int zero_population_current_seat_min;
 extern int zero_population_current_seat_max;
 extern bool zero_population_balance_seats;
+extern bool zero_use_league;
+extern int zero_league_refresh_interval;
+extern float zero_league_rank_weight;
+extern float zero_league_self_ratio;
+extern float zero_league_champion_ratio;
+extern float zero_league_frontier_ratio;
+extern float zero_league_hard_ratio;
+extern float zero_league_coverage_ratio;
+extern int zero_league_min_games;
+extern float zero_league_confidence_scale;
+extern float zero_league_champion_margin;
+extern bool zero_league_use_deviation;
+extern float zero_league_deviation_margin;
+extern float zero_league_deviation_lineup_ratio;
 
 // learner parameters
 extern bool learner_use_per;

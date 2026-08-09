@@ -30,10 +30,97 @@ std::vector<float> calculatePopulationSeatBaseWeights(int min_seats, int max_sea
     return weights;
 }
 
+float calculateLeagueUtility(float value, float rank, float rank_weight)
+{
+    const float lambda = std::clamp(rank_weight, 0.0f, 1.0f);
+    return (1.0f - lambda) * value + lambda * rank;
+}
+
+std::vector<float> blendPopulationSeatWeights(const std::vector<float>& base_weights, int target_index, float mixture)
+{
+    if (base_weights.empty()) { return {}; }
+    const float ratio = std::clamp(mixture, 0.0f, 1.0f);
+    const float sum = std::accumulate(base_weights.begin(), base_weights.end(), 0.0f);
+    std::vector<float> weights(base_weights.size(), 0.0f);
+    for (size_t i = 0; i < weights.size(); ++i) {
+        const float base = sum > 0.0f ? std::max(0.0f, base_weights[i]) / sum : 1.0f / weights.size();
+        weights[i] = (1.0f - ratio) * base;
+    }
+    if (target_index >= 0 && target_index < static_cast<int>(weights.size())) {
+        weights[target_index] += ratio;
+    }
+    return weights;
+}
+
+void RunningStat::add(double value)
+{
+    ++count_;
+    const double delta = value - mean_;
+    mean_ += delta / count_;
+    squared_deviation_sum_ += delta * (value - mean_);
+}
+
+double RunningStat::variance() const
+{
+    return count_ > 1 ? squared_deviation_sum_ / (count_ - 1) : 0.0;
+}
+
+double RunningStat::standardError() const
+{
+    return count_ > 0 ? std::sqrt(std::max(0.0, variance()) / count_) : std::numeric_limits<double>::infinity();
+}
+
+double RunningStat::lowerConfidenceBound(double scale) const
+{
+    return count_ > 0 ? mean_ - std::max(0.0, scale) * standardError() : -std::numeric_limits<double>::infinity();
+}
+
 using namespace minizero;
 using namespace minizero::utils;
 
 namespace {
+
+    int64_t populationKey(int historical_iteration, int num_current)
+    {
+        return (static_cast<int64_t>(historical_iteration) << 32) | static_cast<uint32_t>(num_current);
+    }
+
+    const char* leagueRoleName(LeagueRole role)
+    {
+        switch (role) {
+            case LeagueRole::kSelf: return "self";
+            case LeagueRole::kChampion: return "champion";
+            case LeagueRole::kFrontier: return "frontier";
+            case LeagueRole::kHard: return "hard";
+            case LeagueRole::kCoverage: return "coverage";
+            case LeagueRole::kDeviation: return "deviation";
+        }
+        return "self";
+    }
+
+    RunningStat aggregateCurrentStat(const std::unordered_map<int64_t, PopulationStat>& stats, int historical_iteration)
+    {
+        RunningStat aggregate;
+        const int min_seats = config::zero_population_current_seat_min;
+        const int max_seats = config::zero_population_current_seat_max;
+        for (int num_current = min_seats; num_current <= max_seats; ++num_current) {
+            auto it = stats.find(populationKey(historical_iteration, num_current));
+            if (it == stats.end()) { continue; }
+            const RunningStat& source = it->second.current_utility_;
+            if (source.count_ == 0) { continue; }
+            if (aggregate.count_ == 0) {
+                aggregate = source;
+                continue;
+            }
+            const int combined_count = aggregate.count_ + source.count_;
+            const double delta = source.mean_ - aggregate.mean_;
+            aggregate.squared_deviation_sum_ += source.squared_deviation_sum_ +
+                                                delta * delta * aggregate.count_ * source.count_ / combined_count;
+            aggregate.mean_ += delta * source.count_ / combined_count;
+            aggregate.count_ = combined_count;
+        }
+        return aggregate;
+    }
 
 void logReturnSummary(ZeroLogger& logger, const std::string& item, const std::vector<float>& returns)
 {
@@ -260,6 +347,11 @@ void ZeroServer::initialize()
 void ZeroServer::selfPlay()
 {
     // setup
+    if (config::zero_use_league) {
+        refreshLeaguePool();
+        iteration_population_stats_.clear();
+        iteration_role_game_counts_.clear();
+    }
     std::string self_play_file_name = config::zero_training_directory + "/sgf/" + std::to_string(iteration_) + ".sgf";
     if (config::zero_num_games_per_iteration > 0) { shared_data_.logger_.getSelfPlayFileStream().open(self_play_file_name.c_str(), std::ios::out); }
     shared_data_.logger_.addTrainingLog("[Iteration] =====" + std::to_string(iteration_) + "=====");
@@ -324,15 +416,8 @@ void ZeroServer::selfPlay()
     if (config::zero_num_games_per_iteration > 0) { shared_data_.logger_.getSelfPlayFileStream().close(); }
     shared_data_.logger_.addTrainingLog("[SelfPlay] Finished.");
     if (config::zero_use_population) {
-        for (const auto& item : population_seat_return_stats_) {
-            const int historical_iteration = static_cast<int>(item.first >> 32);
-            const int num_current = static_cast<int>(item.first & 0xffffffffULL);
-            shared_data_.logger_.addTrainingLog(
-                "[Population Cumulative Avg. Return] opponent=" + std::to_string(historical_iteration) +
-                " current_seats=" + std::to_string(num_current) +
-                " games=" + std::to_string(item.second.second) +
-                " return=" + std::to_string(item.second.first / item.second.second));
-        }
+        if (config::zero_use_league) { maybePromoteChampion(); }
+        logPopulationStatistics();
     }
     if (!game_lengths.empty()) {
         shared_data_.logger_.addTrainingLog("[SelfPlay # Finished Games] " + std::to_string(game_lengths.size()));
@@ -377,20 +462,36 @@ void ZeroServer::broadcastSelfPlayJob()
         if (!worker->isIdle() || worker->getType() != "sp") { continue; }
         worker->setIdle(false);
         worker->write("load_model " + config::zero_training_directory + "/model/weight_iter_" + std::to_string(shared_data_.getModelIetration()) + ".pt");
-        if (!population_iterations.empty()) {
+        LeagueRole role = LeagueRole::kHard;
+        int opponent_iteration = -1;
+        if (config::zero_use_league) {
+            role = chooseLeagueRole();
+            if (role == LeagueRole::kHard && config::zero_league_use_deviation) {
+                opponent_iteration = selectRestrictedDeviationOpponent();
+                if (opponent_iteration >= 0) { role = LeagueRole::kDeviation; }
+            }
+            if (role != LeagueRole::kSelf && opponent_iteration < 0) {
+                opponent_iteration = selectLeagueOpponent(role);
+            }
+            if (opponent_iteration < 0) { role = LeagueRole::kSelf; }
+        } else if (!population_iterations.empty()) {
             const size_t rotation = iteration_ / std::max(1, config::zero_population_rotation_interval);
             const size_t opponent_index = (self_play_worker_index + rotation) % population_iterations.size();
-            const int opponent_iteration = population_iterations[opponent_index];
-            const std::vector<float> seat_weights = getPopulationSeatWeights(opponent_iteration);
+            opponent_iteration = population_iterations[opponent_index];
+        }
+
+        if (opponent_iteration >= 0) {
+            const std::vector<float> seat_weights = getPopulationSeatWeights(opponent_iteration, role);
             std::ostringstream weight_stream;
             for (size_t i = 0; i < seat_weights.size(); ++i) {
                 if (i > 0) { weight_stream << ","; }
                 weight_stream << seat_weights[i];
             }
             worker->write("load_population " + config::zero_training_directory + "/model/weight_iter_" +
-                          std::to_string(opponent_iteration) + ".pt " + std::to_string(opponent_iteration) + " " + weight_stream.str());
+                          std::to_string(opponent_iteration) + ".pt " + std::to_string(opponent_iteration) + " " + weight_stream.str() +
+                          (config::zero_use_league ? " " + std::string(leagueRoleName(role)) : ""));
         } else {
-            worker->write("clear_population");
+            worker->write(config::zero_use_league ? "clear_population self" : "clear_population");
         }
         worker->write("reset_actors");
         worker->write("start");
@@ -400,6 +501,10 @@ void ZeroServer::broadcastSelfPlayJob()
 
 std::vector<int> ZeroServer::getPopulationIterations()
 {
+    if (config::zero_use_league) {
+        refreshLeaguePool();
+        return active_population_iterations_;
+    }
     std::vector<int> iterations;
     if (!config::zero_use_population || config::zero_population_size <= 0) { return iterations; }
     const int current = shared_data_.getModelIetration();
@@ -414,7 +519,157 @@ std::vector<int> ZeroServer::getPopulationIterations()
     return iterations;
 }
 
-std::vector<float> ZeroServer::getPopulationSeatWeights(int historical_iteration) const
+void ZeroServer::refreshLeaguePool()
+{
+    if (!config::zero_use_population || !config::zero_use_league || config::zero_population_size <= 0) { return; }
+    const int refresh_interval = std::max(1, config::zero_league_refresh_interval);
+    if (league_last_refresh_iteration_ == iteration_ ||
+        (!active_population_iterations_.empty() && league_last_refresh_iteration_ >= 0 &&
+         iteration_ - league_last_refresh_iteration_ < refresh_interval)) {
+        return;
+    }
+
+    std::vector<int> refreshed;
+    const auto add_if_available = [&refreshed](int candidate) {
+        if (candidate < 0 || std::find(refreshed.begin(), refreshed.end(), candidate) != refreshed.end()) { return; }
+        const std::string path = config::zero_training_directory + "/model/weight_iter_" + std::to_string(candidate) + ".pt";
+        if (std::filesystem::exists(path)) { refreshed.push_back(candidate); }
+    };
+    if (champion_iteration_ >= 0) {
+        const std::string champion_path = config::zero_training_directory + "/model/weight_iter_" + std::to_string(champion_iteration_) + ".pt";
+        if (!std::filesystem::exists(champion_path)) { champion_iteration_ = -1; }
+    }
+    add_if_available(champion_iteration_);
+
+    const int current = shared_data_.getModelIetration();
+    const int checkpoint_interval = std::max(1, config::zero_population_snapshot_interval) *
+                                    std::max(1, config::learner_training_step);
+    for (int candidate = current - checkpoint_interval;
+         candidate >= 0 && static_cast<int>(refreshed.size()) < config::zero_population_size;
+         candidate -= checkpoint_interval) {
+        add_if_available(candidate);
+    }
+    if (static_cast<int>(refreshed.size()) > config::zero_population_size) {
+        refreshed.resize(config::zero_population_size);
+    }
+
+    active_population_iterations_ = std::move(refreshed);
+    league_last_refresh_iteration_ = iteration_;
+    population_stats_.clear();
+    league_role_assignment_counts_.fill(0);
+    if (champion_iteration_ < 0 && !active_population_iterations_.empty()) {
+        champion_iteration_ = active_population_iterations_.front();
+    }
+
+    std::ostringstream pool;
+    for (size_t i = 0; i < active_population_iterations_.size(); ++i) {
+        if (i > 0) { pool << ","; }
+        pool << active_population_iterations_[i];
+    }
+    shared_data_.logger_.addTrainingLog("[League Pool Refresh] active=" + pool.str() +
+                                        " champion=" + std::to_string(champion_iteration_));
+}
+
+LeagueRole ZeroServer::chooseLeagueRole()
+{
+    const std::array<float, 5> weights{
+        std::max(0.0f, config::zero_league_self_ratio),
+        std::max(0.0f, config::zero_league_champion_ratio),
+        std::max(0.0f, config::zero_league_frontier_ratio),
+        std::max(0.0f, config::zero_league_hard_ratio),
+        std::max(0.0f, config::zero_league_coverage_ratio),
+    };
+    if (active_population_iterations_.empty()) {
+        ++league_role_assignment_counts_[0];
+        return LeagueRole::kSelf;
+    }
+    const double weight_sum = std::accumulate(weights.begin(), weights.end(), 0.0);
+    if (weight_sum <= 0.0) {
+        ++league_role_assignment_counts_[0];
+        return LeagueRole::kSelf;
+    }
+
+    const int64_t total = std::accumulate(league_role_assignment_counts_.begin(), league_role_assignment_counts_.end(), int64_t{0});
+    int selected = 0;
+    double largest_deficit = -std::numeric_limits<double>::infinity();
+    for (int i = 0; i < static_cast<int>(weights.size()); ++i) {
+        if (weights[i] <= 0.0f) { continue; }
+        const double deficit = weights[i] / weight_sum * (total + 1) - league_role_assignment_counts_[i];
+        if (deficit > largest_deficit) {
+            largest_deficit = deficit;
+            selected = i;
+        }
+    }
+    ++league_role_assignment_counts_[selected];
+    return std::array<LeagueRole, 5>{LeagueRole::kSelf,
+                                     LeagueRole::kChampion,
+                                     LeagueRole::kFrontier,
+                                     LeagueRole::kHard,
+                                     LeagueRole::kCoverage}[selected];
+}
+
+int ZeroServer::selectLeagueOpponent(LeagueRole role) const
+{
+    if (active_population_iterations_.empty() || role == LeagueRole::kSelf) { return -1; }
+    if (role == LeagueRole::kChampion && champion_iteration_ >= 0) {
+        const std::string path = config::zero_training_directory + "/model/weight_iter_" + std::to_string(champion_iteration_) + ".pt";
+        if (std::filesystem::exists(path)) { return champion_iteration_; }
+    }
+
+    int coverage_opponent = active_population_iterations_.front();
+    int coverage_count = std::numeric_limits<int>::max();
+    int coverage_last_seen = std::numeric_limits<int>::max();
+    int selected = -1;
+    double selected_score = std::numeric_limits<double>::infinity();
+    for (int opponent : active_population_iterations_) {
+        const RunningStat aggregate = aggregateCurrentStat(population_stats_, opponent);
+        int last_seen = -1;
+        for (int num_current = config::zero_population_current_seat_min;
+             num_current <= config::zero_population_current_seat_max;
+             ++num_current) {
+            auto it = population_stats_.find(populationKey(opponent, num_current));
+            if (it != population_stats_.end()) { last_seen = std::max(last_seen, it->second.last_seen_iteration_); }
+        }
+        if (aggregate.count_ < coverage_count ||
+            (aggregate.count_ == coverage_count && last_seen < coverage_last_seen)) {
+            coverage_opponent = opponent;
+            coverage_count = aggregate.count_;
+            coverage_last_seen = last_seen;
+        }
+        if (aggregate.count_ < std::max(1, config::zero_league_min_games)) { continue; }
+
+        const double score = role == LeagueRole::kFrontier
+                                 ? std::abs(aggregate.mean_)
+                                 : aggregate.lowerConfidenceBound(config::zero_league_confidence_scale);
+        if (score < selected_score) {
+            selected_score = score;
+            selected = opponent;
+        }
+    }
+    return selected >= 0 ? selected : coverage_opponent;
+}
+
+int ZeroServer::selectRestrictedDeviationOpponent() const
+{
+    const int num_current = config::zero_population_current_seat_max;
+    int selected = -1;
+    double largest_deviation = config::zero_league_deviation_margin;
+    for (int opponent : active_population_iterations_) {
+        auto it = population_stats_.find(populationKey(opponent, num_current));
+        if (it == population_stats_.end() ||
+            it->second.historical_utility_.count_ < std::max(1, config::zero_league_min_games)) {
+            continue;
+        }
+        const double deviation = it->second.historical_utility_.lowerConfidenceBound(config::zero_league_confidence_scale);
+        if (deviation > largest_deviation) {
+            largest_deviation = deviation;
+            selected = opponent;
+        }
+    }
+    return selected;
+}
+
+std::vector<float> ZeroServer::getPopulationSeatWeights(int historical_iteration, LeagueRole role) const
 {
     const int min_seats = config::zero_population_current_seat_min;
     const int max_seats = config::zero_population_current_seat_max;
@@ -422,19 +677,24 @@ std::vector<float> ZeroServer::getPopulationSeatWeights(int historical_iteration
     const std::vector<float> base_weights = calculatePopulationSeatBaseWeights(
         min_seats, max_seats, config::zero_population_balance_seats);
 
+    if (config::zero_use_league && role == LeagueRole::kDeviation) {
+        return blendPopulationSeatWeights(base_weights,
+                                          max_seats - min_seats,
+                                          config::zero_league_deviation_lineup_ratio);
+    }
+    if (config::zero_use_league && role != LeagueRole::kHard) { return base_weights; }
+
     const float hard_ratio = std::clamp(config::zero_population_hard_ratio, 0.0f, 1.0f);
     if (hard_ratio <= 0.0f) { return base_weights; }
 
     std::vector<float> hard_weights = base_weights;
     bool has_statistics = false;
     for (int i = 0; i < count; ++i) {
-        const int64_t key = (static_cast<int64_t>(historical_iteration) << 32) |
-                            static_cast<uint32_t>(min_seats + i);
-        auto it = population_seat_return_stats_.find(key);
-        if (it == population_seat_return_stats_.end() || it->second.second == 0) { continue; }
-        const double mean_return = it->second.first / it->second.second;
+        auto it = population_stats_.find(populationKey(historical_iteration, min_seats + i));
+        if (it == population_stats_.end() || it->second.current_utility_.count_ == 0) { continue; }
+        const double mean_utility = it->second.current_utility_.mean_;
         const float hardness = std::clamp(
-            static_cast<float>(-mean_return / std::max(1e-6f, config::zero_population_temperature)),
+            static_cast<float>(-mean_utility / std::max(1e-6f, config::zero_population_temperature)),
             -20.0f,
             20.0f);
         hard_weights[i] *= std::exp(hardness);
@@ -453,6 +713,12 @@ void ZeroServer::recordPopulationResult(const ZeroSelfPlayData& sp_data)
 {
     EnvironmentLoader env_loader;
     if (!env_loader.loadFromString(sp_data.game_record_)) { return; }
+    const std::string league_role = env_loader.getTag("LR");
+    if (!league_role.empty()) { ++iteration_role_game_counts_[league_role]; }
+    if (config::zero_use_league &&
+        env_loader.getTag("EV") != "weight_iter_" + std::to_string(shared_data_.getModelIetration()) + ".pt") {
+        return;
+    }
     const std::string lineup_string = env_loader.getTag("LM");
     const std::string historical_iteration_string = env_loader.getTag("HI");
     if (lineup_string.empty() || historical_iteration_string.empty()) { return; }
@@ -461,21 +727,88 @@ void ZeroServer::recordPopulationResult(const ZeroSelfPlayData& sp_data)
     std::string token;
     int player_index = 0;
     int num_current = 0;
-    double current_return_sum = 0.0;
+    int num_historical = 0;
+    double current_utility_sum = 0.0;
+    double historical_utility_sum = 0.0;
+    const std::vector<float> ranks = config::zero_use_league ? env_loader.getRank(0) : sp_data.returns_;
+    const float rank_weight = config::zero_use_league ? config::zero_league_rank_weight : 0.0f;
     while (std::getline(lineup_stream, token, ',')) {
-        if (token == "0" && player_index < static_cast<int>(sp_data.returns_.size())) {
-            ++num_current;
-            current_return_sum += sp_data.returns_[player_index];
+        if (player_index < static_cast<int>(sp_data.returns_.size())) {
+            const float rank = player_index < static_cast<int>(ranks.size()) ? ranks[player_index] : sp_data.returns_[player_index];
+            const float utility = calculateLeagueUtility(sp_data.returns_[player_index], rank, rank_weight);
+            if (token == "0") {
+                ++num_current;
+                current_utility_sum += utility;
+            } else if (token == "1") {
+                ++num_historical;
+                historical_utility_sum += utility;
+            }
         }
         ++player_index;
     }
-    if (num_current == 0) { return; }
+    if (num_current == 0 || num_historical == 0) { return; }
     const int historical_iteration = std::stoi(historical_iteration_string);
-    const int64_t key = (static_cast<int64_t>(historical_iteration) << 32) |
-                        static_cast<uint32_t>(num_current);
-    auto& stat = population_seat_return_stats_[key];
-    stat.first += current_return_sum / num_current;
-    ++stat.second;
+    const int64_t key = populationKey(historical_iteration, num_current);
+    const auto update = [&](PopulationStat& stat) {
+        stat.current_utility_.add(current_utility_sum / num_current);
+        stat.historical_utility_.add(historical_utility_sum / num_historical);
+        stat.last_seen_iteration_ = iteration_;
+    };
+    update(population_stats_[key]);
+    update(iteration_population_stats_[key]);
+}
+
+void ZeroServer::maybePromoteChampion()
+{
+    if (champion_iteration_ < 0) {
+        if (!active_population_iterations_.empty()) { champion_iteration_ = active_population_iterations_.front(); }
+        return;
+    }
+    const int candidate_iteration = shared_data_.getModelIetration();
+    if (candidate_iteration == champion_iteration_) { return; }
+
+    const int gate_seats = config::zero_population_current_seat_min;
+    auto it = iteration_population_stats_.find(populationKey(champion_iteration_, gate_seats));
+    if (it == iteration_population_stats_.end()) { return; }
+    const RunningStat& candidate = it->second.current_utility_;
+    if (candidate.count_ < std::max(1, config::zero_league_min_games)) { return; }
+
+    const double lower_bound = candidate.lowerConfidenceBound(config::zero_league_confidence_scale);
+    shared_data_.logger_.addTrainingLog(
+        "[League Champion Gate] candidate=" + std::to_string(candidate_iteration) +
+        " champion=" + std::to_string(champion_iteration_) +
+        " current_seats=" + std::to_string(gate_seats) +
+        " games=" + std::to_string(candidate.count_) +
+        " mean=" + std::to_string(candidate.mean_) +
+        " lower_bound=" + std::to_string(lower_bound) +
+        " margin=" + std::to_string(config::zero_league_champion_margin));
+    if (lower_bound > config::zero_league_champion_margin) {
+        champion_iteration_ = candidate_iteration;
+        shared_data_.logger_.addTrainingLog("[League Champion Promoted] " + std::to_string(champion_iteration_));
+    }
+}
+
+void ZeroServer::logPopulationStatistics()
+{
+    if (config::zero_use_league) {
+        for (const auto& role : iteration_role_game_counts_) {
+            shared_data_.logger_.addTrainingLog("[League Role Games] role=" + role.first + " games=" + std::to_string(role.second));
+        }
+    }
+    for (const auto& item : population_stats_) {
+        const int historical_iteration = static_cast<int>(item.first >> 32);
+        const int num_current = static_cast<int>(item.first & 0xffffffffULL);
+        const PopulationStat& stat = item.second;
+        shared_data_.logger_.addTrainingLog(
+            std::string(config::zero_use_league ? "[League Block Utility]" : "[Population Cumulative Return]") +
+            " opponent=" + std::to_string(historical_iteration) +
+            " current_seats=" + std::to_string(num_current) +
+            " games=" + std::to_string(stat.current_utility_.count_) +
+            " current_mean=" + std::to_string(stat.current_utility_.mean_) +
+            " current_stderr=" + std::to_string(stat.current_utility_.standardError()) +
+            " historical_mean=" + std::to_string(stat.historical_utility_.mean_) +
+            " historical_stderr=" + std::to_string(stat.historical_utility_.standardError()));
+    }
 }
 
 void ZeroServer::optimization()

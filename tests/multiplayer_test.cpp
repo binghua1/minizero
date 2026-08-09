@@ -3,6 +3,7 @@
 #include "zero_server.h"
 #include <cassert>
 #include <cmath>
+#include <numeric>
 #include <vector>
 
 int main()
@@ -45,6 +46,21 @@ int main()
     assert(std::abs(balanced_seats[0] - 6.0f / 11.0f) < 1e-6f);
     assert(std::abs(balanced_seats[1] - 3.0f / 11.0f) < 1e-6f);
     assert(std::abs(balanced_seats[2] - 2.0f / 11.0f) < 1e-6f);
+
+    assert(std::abs(zero::calculateLeagueUtility(0.2f, 1.0f, 0.75f) - 0.8f) < 1e-6f);
+    zero::RunningStat league_stat;
+    league_stat.add(1.0);
+    league_stat.add(2.0);
+    league_stat.add(3.0);
+    assert(std::abs(league_stat.mean_ - 2.0) < 1e-9);
+    assert(std::abs(league_stat.variance() - 1.0) < 1e-9);
+    assert(std::abs(league_stat.lowerConfidenceBound(1.0) - (2.0 - std::sqrt(1.0 / 3.0))) < 1e-9);
+
+    const std::vector<float> deviation_seats = zero::blendPopulationSeatWeights(balanced_seats, 2, 0.5f);
+    assert(std::abs(std::accumulate(deviation_seats.begin(), deviation_seats.end(), 0.0f) - 1.0f) < 1e-6f);
+    assert(std::abs(deviation_seats[0] - 3.0f / 11.0f) < 1e-6f);
+    assert(std::abs(deviation_seats[1] - 1.5f / 11.0f) < 1e-6f);
+    assert(std::abs(deviation_seats[2] - 6.5f / 11.0f) < 1e-6f);
 
     MCTS mcts(8);
     mcts.reset();

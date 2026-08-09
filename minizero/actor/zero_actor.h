@@ -46,7 +46,8 @@ public:
                                int historical_network_id,
                                const std::shared_ptr<network::Network>& historical_network,
                                int historical_iteration,
-                               const std::vector<float>& current_seat_weights);
+                               const std::vector<float>& current_seat_weights,
+                               const std::string& league_role = "");
     std::string getRecord(const std::unordered_map<std::string, std::string>& tags = {}) const override;
     std::shared_ptr<Search> createSearch() override { return std::make_shared<MCTS>(tree_node_size_); }
     std::shared_ptr<MCTS> getMCTS() { return std::static_pointer_cast<MCTS>(search_); }
@@ -87,6 +88,7 @@ protected:
     std::shared_ptr<network::Network> historical_network_;
     std::vector<int> seat_model_ids_;
     std::vector<float> current_seat_weights_;
+    std::string league_role_;
 };
 
 } // namespace minizero::actor

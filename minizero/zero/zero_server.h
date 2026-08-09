@@ -3,6 +3,7 @@
 #include "base_server.h"
 #include "configuration.h"
 #include "time_system.h"
+#include <array>
 #include <boost/date_time/posix_time/posix_time.hpp>
 #include <boost/thread.hpp>
 #include <cstdint>
@@ -17,6 +18,34 @@
 namespace minizero::zero {
 
 std::vector<float> calculatePopulationSeatBaseWeights(int min_seats, int max_seats, bool balance_seats);
+float calculateLeagueUtility(float value, float rank, float rank_weight);
+std::vector<float> blendPopulationSeatWeights(const std::vector<float>& base_weights, int target_index, float mixture);
+
+struct RunningStat {
+    void add(double value);
+    double variance() const;
+    double standardError() const;
+    double lowerConfidenceBound(double scale) const;
+
+    int count_ = 0;
+    double mean_ = 0.0;
+    double squared_deviation_sum_ = 0.0;
+};
+
+struct PopulationStat {
+    RunningStat current_utility_;
+    RunningStat historical_utility_;
+    int last_seen_iteration_ = -1;
+};
+
+enum class LeagueRole {
+    kSelf,
+    kChampion,
+    kFrontier,
+    kHard,
+    kCoverage,
+    kDeviation,
+};
 
 class ZeroLogger {
 public:
@@ -116,7 +145,13 @@ protected:
     virtual void optimization();
     virtual std::string getUpdatedConfig();
     std::vector<int> getPopulationIterations();
-    std::vector<float> getPopulationSeatWeights(int historical_iteration) const;
+    std::vector<float> getPopulationSeatWeights(int historical_iteration, LeagueRole role = LeagueRole::kHard) const;
+    void refreshLeaguePool();
+    LeagueRole chooseLeagueRole();
+    int selectLeagueOpponent(LeagueRole role) const;
+    int selectRestrictedDeviationOpponent() const;
+    void maybePromoteChampion();
+    void logPopulationStatistics();
     void recordPopulationResult(const ZeroSelfPlayData& sp_data);
     void syncConfig();
     void stopJob(const std::string& job_type);
@@ -131,7 +166,13 @@ protected:
     std::vector<int> latest_game_lengths_;
     std::vector<float> latest_game_returns_;
     std::vector<std::vector<float>> latest_game_player_returns_;
-    std::unordered_map<int64_t, std::pair<double, int>> population_seat_return_stats_;
+    std::unordered_map<int64_t, PopulationStat> population_stats_;
+    std::unordered_map<int64_t, PopulationStat> iteration_population_stats_;
+    std::unordered_map<std::string, int> iteration_role_game_counts_;
+    std::vector<int> active_population_iterations_;
+    std::array<int64_t, 5> league_role_assignment_counts_{};
+    int league_last_refresh_iteration_ = -1;
+    int champion_iteration_ = -1;
 };
 
 } // namespace minizero::zero

@@ -42,6 +42,10 @@ The first historical opponent becomes available after `zero_population_snapshot_
 
 The neural network and terminal targets remain the same vector in both modes. Models trained with different search types should use separate training directories because their MCTS policy targets differ.
 
+## Robust league training
+
+The optional robust league adds rank-aware utility, confidence statistics, metric-driven opponent selection, frozen active pools, worker roles, a champion gate, and an independently switchable restricted-deviation response. It does not require behavior conditioning or modify the learner/network architecture. See [RobustLeague.md](RobustLeague.md) for the complete formulas, every parameter, the recommended Blokus 10 settings, runtime implications, and the boundary relative to PSRO/JPSRO.
+
 ## Paper implementation audit
 
 The four multiplayer extensions in [Petosa and Balch, *Multiplayer AlphaZero*](https://arxiv.org/pdf/1910.13012) are implemented in this branch:

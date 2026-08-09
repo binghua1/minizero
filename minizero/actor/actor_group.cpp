@@ -217,6 +217,9 @@ void ActorGroup::createActors()
         zero_actor->setPopulationNetworks(network_id, getSharedData()->networks_[network_id], -1, nullptr, -1, {});
         getSharedData()->actors_.emplace_back(actor);
     }
+    if (config::zero_use_league && !config::zero_use_population) {
+        throw std::runtime_error("league training requires zero_use_population=true");
+    }
     if (config::zero_use_population) {
         const int num_players = getSharedData()->actors_.front()->getEnvironment().getNumPlayer();
         if (num_players <= 2 || config::nn_type_name != "alphazero") {
@@ -230,6 +233,21 @@ void ActorGroup::createActors()
             config::zero_population_current_seat_min > config::zero_population_current_seat_max ||
             config::nn_behavior_history_dropout < 0.0f || config::nn_behavior_history_dropout > 1.0f) {
             throw std::runtime_error("invalid multiplayer population configuration");
+        }
+        const float league_role_sum = config::zero_league_self_ratio +
+                                      config::zero_league_champion_ratio +
+                                      config::zero_league_frontier_ratio +
+                                      config::zero_league_hard_ratio +
+                                      config::zero_league_coverage_ratio;
+        if (config::zero_use_league &&
+            (config::zero_league_refresh_interval <= 0 ||
+             config::zero_league_rank_weight < 0.0f || config::zero_league_rank_weight > 1.0f ||
+             config::zero_league_self_ratio < 0.0f || config::zero_league_champion_ratio < 0.0f ||
+             config::zero_league_frontier_ratio < 0.0f || config::zero_league_hard_ratio < 0.0f ||
+             config::zero_league_coverage_ratio < 0.0f || league_role_sum <= 0.0f ||
+             config::zero_league_min_games <= 0 || config::zero_league_confidence_scale < 0.0f ||
+             config::zero_league_deviation_lineup_ratio < 0.0f || config::zero_league_deviation_lineup_ratio > 1.0f)) {
+            throw std::runtime_error("invalid robust league configuration");
         }
     }
 }
@@ -284,7 +302,7 @@ void ActorGroup::handleCommand(const std::string& command_prefix, const std::str
     } else if (command_prefix == "load_population") {
         std::cerr << "[command] " << command << std::endl;
         std::vector<std::string> args = utils::stringToVector(command);
-        if (args.size() != 4) { throw std::runtime_error("load_population expects: model_path iteration seat_weights"); }
+        if (args.size() != 4 && args.size() != 5) { throw std::runtime_error("load_population expects: model_path iteration seat_weights [league_role]"); }
         const std::string& model_path = args[1];
         const int historical_iteration = std::stoi(args[2]);
         std::vector<float> seat_weights;
@@ -311,14 +329,23 @@ void ActorGroup::handleCommand(const std::string& command_prefix, const std::str
                                               history_offset + gpu_id,
                                               getSharedData()->networks_[history_offset + gpu_id],
                                               historical_iteration,
-                                              seat_weights);
+                                              seat_weights,
+                                              args.size() == 5 ? args[4] : "");
         }
     } else if (command_prefix == "clear_population") {
         std::cerr << "[command] " << command << std::endl;
+        const std::vector<std::string> args = utils::stringToVector(command);
+        if (args.size() != 1 && args.size() != 2) { throw std::runtime_error("clear_population expects: [league_role]"); }
         for (size_t actor_id = 0; actor_id < getSharedData()->actors_.size(); ++actor_id) {
             const int gpu_id = actor_id % getSharedData()->num_gpu_;
             auto zero_actor = std::dynamic_pointer_cast<ZeroActor>(getSharedData()->actors_[actor_id]);
-            zero_actor->setPopulationNetworks(gpu_id, getSharedData()->networks_[gpu_id], -1, nullptr, -1, {});
+            zero_actor->setPopulationNetworks(gpu_id,
+                                              getSharedData()->networks_[gpu_id],
+                                              -1,
+                                              nullptr,
+                                              -1,
+                                              {},
+                                              args.size() == 2 ? args[1] : "");
         }
     } else if (command_prefix == "update_config") {
         std::cerr << "[command] " << command << std::endl;

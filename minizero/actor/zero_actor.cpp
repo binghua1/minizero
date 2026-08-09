@@ -206,7 +206,8 @@ void ZeroActor::setPopulationNetworks(int current_network_id,
                                       int historical_network_id,
                                       const std::shared_ptr<network::Network>& historical_network,
                                       int historical_iteration,
-                                      const std::vector<float>& current_seat_weights)
+                                      const std::vector<float>& current_seat_weights,
+                                      const std::string& league_role)
 {
     if (!current_network) { throw std::runtime_error("population current network is missing"); }
     current_network_id_ = current_network_id;
@@ -215,6 +216,7 @@ void ZeroActor::setPopulationNetworks(int current_network_id,
     historical_network_ = historical_network;
     historical_iteration_ = historical_iteration;
     current_seat_weights_ = current_seat_weights;
+    league_role_ = league_role;
     samplePopulationLineup();
     activateNetworkForTurn();
 }
@@ -268,6 +270,7 @@ void ZeroActor::activateNetworkForTurn()
 std::string ZeroActor::getRecord(const std::unordered_map<std::string, std::string>& tags) const
 {
     auto population_tags = tags;
+    if (!league_role_.empty()) { population_tags["LR"] = league_role_; }
     if (historical_iteration_ >= 0) {
         std::ostringstream lineup;
         for (size_t i = 0; i < seat_model_ids_.size(); ++i) {
