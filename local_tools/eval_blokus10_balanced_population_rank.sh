@@ -11,10 +11,12 @@ candidate_iter="${MODEL:-latest}"
 baseline_iter="${BASELINE_MODEL:-250000}"
 simulations="${SIMULATIONS:-50}"
 games_per_seating="${GAMES_PER_SEATING:-50}"
+num_games="${NUM_GAMES:-}"
 gpu="${GPU:-0}"
 threads="${THREADS:-3}"
 mode="${MODE:-overwrite}"
 searches="${SEARCHES:-rank maxn}"
+baselines="${BASELINES:-nohead oldrank rankclass adaptivetrained}"
 executable="${EXECUTABLE:-${repo_dir}/build/blokus10/minizero_blokus10}"
 
 latest_checkpoint_iter() {
@@ -40,27 +42,47 @@ if [[ "$mode" != "overwrite" && "$mode" != "resume" ]]; then
   echo "MODE must be overwrite or resume"
   exit 1
 fi
+if [[ -n "$num_games" && ( ! "$num_games" =~ ^[1-9][0-9]*$ ) ]]; then
+  echo "NUM_GAMES must be a positive integer"
+  exit 1
+fi
 if [[ ! -x "$executable" ]]; then
   echo "Missing executable: $executable"
   exit 1
 fi
 
 candidate_model="${train_dir}/model/weight_iter_${candidate_iter}.pt"
-candidate_cfg="${train_dir}/blokus10_balanced_population_rank_l0p75_n50.cfg"
-baseline_cfg="${repo_dir}/blokus10_maxn_01/blokus10_maxn_01.cfg"
+candidate_cfg="${CANDIDATE_CFG:-${train_dir}/$(basename "${train_dir}").cfg}"
+default_baseline_cfg="${repo_dir}/blokus10_maxn_01/blokus10_maxn_01.cfg"
 
 declare -A baseline_models=(
   [nohead]="${repo_dir}/blokus10_maxn_01/model/weight_iter_${baseline_iter}.pt"
   [oldrank]="${repo_dir}/blokus10_maxn_01_head_rank_250000_rank_utility/model/weight_iter_${baseline_iter}.pt"
   [rankclass]="${repo_dir}/blokus10_maxn_rank_classification_n50/model/weight_iter_${baseline_iter}.pt"
   [adaptivetrained]="${repo_dir}/blokus10_rank_adaptive_lmax0p75_tau0p20_k12_n50/model/weight_iter_${baseline_iter}.pt"
+  [oldpopulation]="${repo_dir}/blokus10_behavior_population_n50/model/weight_iter_${baseline_iter}.pt"
+  [filmrank]="${repo_dir}/blokus10_balanced_population_rank_l0p75_n50/model/weight_iter_${baseline_iter}.pt"
+)
+
+declare -A baseline_cfgs=(
+  [nohead]="${default_baseline_cfg}"
+  [oldrank]="${default_baseline_cfg}"
+  [rankclass]="${default_baseline_cfg}"
+  [adaptivetrained]="${default_baseline_cfg}"
+  [oldpopulation]="${repo_dir}/blokus10_behavior_population_n50/blokus10_behavior_population_n50.cfg"
+  [filmrank]="${repo_dir}/blokus10_balanced_population_rank_l0p75_n50/blokus10_balanced_population_rank_l0p75_n50.cfg"
 )
 
 need_file "$candidate_model"
 need_file "$candidate_cfg"
-need_file "$baseline_cfg"
-for baseline in nohead oldrank rankclass adaptivetrained; do
+for baseline in $baselines; do
+  if [[ -z "${baseline_models[$baseline]+x}" ]]; then
+    echo "Unknown baseline: $baseline"
+    echo "Supported baselines: nohead oldrank rankclass adaptivetrained oldpopulation filmrank"
+    exit 1
+  fi
   need_file "${baseline_models[$baseline]}"
+  need_file "${baseline_cfgs[$baseline]}"
 done
 
 make_manifest() {
@@ -72,12 +94,13 @@ make_manifest() {
 
   python3 - "$repo_dir" "$executable" "$candidate_model" "$candidate_cfg" \
     "$candidate_search" "$baseline_name" "$baseline_model" "$baseline_cfg" \
-    "$simulations" "$games_per_seating" > "$output/arena.json" <<'PY'
+    "$simulations" "$games_per_seating" "$num_games" > "$output/arena.json" <<'PY'
 import json
 import sys
 
 (repo, executable, candidate_model, candidate_cfg, candidate_search,
- baseline_name, baseline_model, baseline_cfg, simulations, games_per_seating) = sys.argv[1:]
+ baseline_name, baseline_model, baseline_cfg, simulations, games_per_seating,
+ num_games) = sys.argv[1:]
 
 common = {
     "program_seed": "{seed}",
@@ -124,13 +147,16 @@ manifest = {
         [baseline_name, candidate_name, candidate_name, candidate_name],
     ],
     "seat_mode": "all_permutations",
-    "games_per_seating": int(games_per_seating),
     "max_moves": 160,
     "terminal_passes": 4,
     "pass_mode": "elimination",
     "command_timeout": 300,
     "seed": 0,
 }
+if num_games:
+    manifest["num_games"] = int(num_games)
+else:
+    manifest["games_per_seating"] = int(games_per_seating)
 json.dump(manifest, sys.stdout, indent=2)
 sys.stdout.write("\n")
 PY
@@ -140,16 +166,22 @@ eval_root="${train_dir}/evaluation"
 mkdir -p "$eval_root"
 
 echo "candidate=${candidate_model}"
-echo "simulations=${simulations}, noise=true, games=700 when GAMES_PER_SEATING=50"
-echo "GPU=${gpu}, THREADS=${threads}, searches=${searches}"
+if [[ -n "$num_games" ]]; then
+  total_games="$num_games"
+else
+  total_games=$((games_per_seating * 14))
+fi
+echo "simulations=${simulations}, noise=true, games=${total_games}"
+echo "GPU=${gpu}, THREADS=${threads}, searches=${searches}, baselines=${baselines}"
 
 for search in $searches; do
   if [[ "$search" != "rank" && "$search" != "maxn" ]]; then
     echo "SEARCHES only supports rank and maxn"
     exit 1
   fi
-  for baseline in nohead oldrank rankclass adaptivetrained; do
-    output="${eval_root}/balancedrank${candidate_iter}_${search}_vs_${baseline}${baseline_iter}_maxn_n${simulations}_noise_700"
+  for baseline in $baselines; do
+    output="${eval_root}/balancedrank${candidate_iter}_${search}_vs_${baseline}${baseline_iter}_maxn_n${simulations}_noise_${total_games}"
+    baseline_cfg="${baseline_cfgs[$baseline]}"
     make_manifest "$output" "$search" "${baseline}_maxn" "${baseline_models[$baseline]}"
     echo
     echo "${search} candidate vs ${baseline} MaxN"

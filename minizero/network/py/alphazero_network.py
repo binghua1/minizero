@@ -55,6 +55,10 @@ class AlphaZeroNetwork(nn.Module):
         nn.init.zeros_(self.behavior_film.bias)
         self.policy = PolicyNetwork(num_hidden_channels, hidden_channel_height, hidden_channel_width, action_size,
                                     fully_convolutional=(game_name in ("blokus", "blokus15")))
+        # Keep the attribute available for TorchScript even when the optional
+        # rank head is disabled. Identity has no parameters and is never used
+        # by forward() unless use_rank_head is true.
+        self.rank = nn.Identity()
         if self.discrete_value_size == 1:
             value_output_size = num_players if num_players > 2 else 1
             self.value = ValueNetwork(num_hidden_channels, hidden_channel_height, hidden_channel_width, num_value_hidden_channels, value_output_size)
