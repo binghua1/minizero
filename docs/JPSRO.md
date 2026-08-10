@@ -63,7 +63,10 @@ Other overrides are `JPSRO_GAMES_PER_ITERATION`, `JPSRO_TRAINING_STEPS`,
 `training/model/` contains the continuously warm-started learner checkpoints;
 `frozen/p*.pt` are immutable population members. The latest checkpoint is the
 single-model result. `meta/meta_strategy.json` is the population result: sample
-one whole joint profile once per game to preserve CCE correlation.
+one whole joint profile once per game to preserve CCE correlation. Each solved
+generation is also preserved as `meta/meta_strategy_g0.json`,
+`meta/meta_strategy_g1.json`, and so on; `meta_strategy.json` always points to
+the latest solved generation.
 
 ## Formulas and guarantees
 
