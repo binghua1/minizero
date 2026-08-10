@@ -170,8 +170,27 @@ improve.
 Oracle self-play still performs one MCTS search per move. Extra training time
 comes from loading at most (n-1) frozen models once per self-play worker and
 MiniZero iteration. Identical frozen artifacts used at several seats are
-deduplicated on each GPU. Memory is approximately one current model plus the
-distinct frozen models in the selected profile, not the full population.
+deduplicated on each GPU. Frozen models keep stable GPU slots across lineup and
+seat changes, so an already resident model is not loaded again. Memory is
+approximately one current model plus the distinct frozen models in the
+selected profile, not the full population.
+
+`tools/quick-run.sh -b` controls self-play parallel games and therefore the
+neural-network inference batch. It is different from `learner_batch_size`,
+which only changes optimizer batches. When several policy networks fragment
+inference work, increasing `-b` is the first throughput adjustment. For the
+small TicTacMo network on one GPU, start with `-b 96 -c 12` instead of the old
+`-b 32 -c 4`, then lower `-b` only if GPU memory is insufficient. A larger
+`learner_batch_size` does not recover self-play batching; 1024 is already a
+large TicTacMo optimizer batch, while 2048 is an optional memory-dependent
+experiment.
+
+Only one of (n) seats is trainable in each oracle game. This reduces usable
+replay positions per game to about (1/n), but it does not make each MCTS game
+(n) times slower. Matching the baseline's number of distinct trainable
+positions would require more games; a warm-started best response can instead
+use fewer learner steps and stop when frozen-candidate deviation gain stops
+improving.
 
 The complete payoff table grows as (\prod_i|\Pi_i|), or (K^n) for a shared
 pool of size (K). Four-player generations with (K=2) and (K=3) need 16
