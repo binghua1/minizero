@@ -23,6 +23,55 @@ response, and measures its deviation gain.
 
 Normal AlphaZero is unchanged when `zero_use_jpsro=false`.
 
+## Reproducible TicTacMo from-scratch experiment
+
+`tools/tictacmo-jpsro.sh` compares the two training objectives without a
+pretrained checkpoint:
+
+- `baseline_p0` is ordinary multiplayer AlphaZero from a seeded random
+  initialization. Its middle and final checkpoints form the initial finite
+  population, so the first CCE is not forced to be a one-policy point mass.
+- `oracle_p1` starts from the same seeded random initialization, with the same
+  iterations, games, learner steps, batch size, and MCTS simulations. Its only
+  method-level difference is `zero_use_jpsro=true`, which trains one rotating
+  responder seat against the CCE opponent profiles induced by the two frozen
+  baseline checkpoints.
+
+Run all stages inside the MiniZero container:
+
+```bash
+tools/tictacmo-jpsro.sh all runs/tictacmo_jpsro_s0 path/to/tictacmo.cfg
+```
+
+For a safer long run, execute the restart boundaries separately:
+
+```bash
+tools/tictacmo-jpsro.sh baseline runs/tictacmo_jpsro_s0 path/to/tictacmo.cfg
+tools/tictacmo-jpsro.sh oracle   runs/tictacmo_jpsro_s0
+tools/tictacmo-jpsro.sh evaluate runs/tictacmo_jpsro_s0
+```
+
+The defaults are 10 iterations, 2000 games per iteration, 250 learner steps,
+batch size 1024, 50 MCTS simulations, self-play batch 96, and seed 0. For
+example, change both training budgets together with:
+
+```bash
+JPSRO_ITERATIONS=20 JPSRO_TRAINING_STEPS=500 \
+  tools/tictacmo-jpsro.sh all runs/tictacmo_jpsro_s0 path/to/tictacmo.cfg
+```
+
+Other overrides are `JPSRO_GAMES_PER_ITERATION`, `JPSRO_LEARNER_BATCH`,
+`JPSRO_SELFPLAY_BATCH`, `JPSRO_CPU_THREADS`, `JPSRO_EVAL_GAMES`,
+`JPSRO_EVAL_THREADS`, `JPSRO_SIMULATIONS`, `JPSRO_GPU`, `JPSRO_SEED`, and
+`JPSRO_TOLERANCE`. `JPSRO_BASELINE_MID_ITERATION` selects the earlier baseline
+checkpoint and defaults to half of `JPSRO_ITERATIONS`.
+
+The single-model result is `oracle_p1/model/weight_iter_*.pt`. The population
+result is `meta/meta_strategy.json`: sample one whole joint profile once per
+game to preserve its CCE correlation. If an external evaluator accepts only
+one checkpoint, use and report `p1`; if it accepts a population, use the joint
+distribution and report both its empirical CCE gap and match results.
+
 ## Formulas and guarantees
 
 For player (i), let (\Pi_i) be its finite policy population and let
@@ -188,9 +237,10 @@ experiment.
 Only one of (n) seats is trainable in each oracle game. This reduces usable
 replay positions per game to about (1/n), but it does not make each MCTS game
 (n) times slower. Matching the baseline's number of distinct trainable
-positions would require more games; a warm-started best response can instead
-use fewer learner steps and stop when frozen-candidate deviation gain stops
-improving.
+positions would require more games. For a clean from-scratch method comparison,
+keep the baseline and oracle compute budgets equal and explicitly report that
+the oracle receives fewer trainable positions; a separate data-matched run
+would require about (n) times as many games and answers a different question.
 
 The complete payoff table grows as (\prod_i|\Pi_i|), or (K^n) for a shared
 pool of size (K). Four-player generations with (K=2) and (K=3) need 16
