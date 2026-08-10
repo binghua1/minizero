@@ -47,6 +47,10 @@ int main()
     assert(std::abs(balanced_seats[0] - 6.0f / 11.0f) < 1e-6f);
     assert(std::abs(balanced_seats[1] - 3.0f / 11.0f) < 1e-6f);
     assert(std::abs(balanced_seats[2] - 2.0f / 11.0f) < 1e-6f);
+    assert(zero::calculateJPSROPlainCount(4, 0.7f) == 3);
+    assert(zero::calculateJPSROPlainCount(4, 0.0f) == 0);
+    assert(zero::calculateJPSROPlainCount(4, 1.0f) == 4);
+    assert(zero::calculateJPSROPlainCount(64, 0.7f) == 45);
 
     const std::filesystem::path profile_path =
         std::filesystem::temp_directory_path() / "minizero_jpsro_profile_test.tsv";

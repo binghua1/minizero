@@ -39,6 +39,20 @@ def cce_gap(distribution, policy_sets, payoffs):
     return max(0.0, best_gain), witness
 
 
+def compact_cce_support(distribution, policy_sets, payoffs, tolerance):
+    """Return the smallest top-mass prefix that still passes the CCE check."""
+    ordered = sorted(distribution.items(), key=lambda item: item[1], reverse=True)
+    for size in range(1, len(ordered) + 1):
+        selected = ordered[:size]
+        total = sum(probability for _, probability in selected)
+        candidate = {profile: probability / total for profile, probability in selected}
+        gap, witness = cce_gap(candidate, policy_sets, payoffs)
+        if gap <= tolerance:
+            return candidate, gap, witness
+    gap, witness = cce_gap(distribution, policy_sets, payoffs)
+    return distribution, gap, witness
+
+
 def solve_cce(policy_sets, payoffs, iterations=5000, tolerance=0.01,
               eta=None, utility_min=-1.0, utility_max=1.0,
               check_interval=100):
@@ -113,7 +127,9 @@ def solve_cce(policy_sets, payoffs, iterations=5000, tolerance=0.01,
     distribution = {profile: mass for profile, mass in distribution.items() if mass >= 1e-12}
     total = sum(distribution.values())
     distribution = {profile: mass / total for profile, mass in distribution.items()}
-    answer_gap, answer_witness = cce_gap(distribution, policy_sets, payoffs)
+    raw_support_size = len(distribution)
+    distribution, answer_gap, answer_witness = compact_cce_support(
+        distribution, policy_sets, payoffs, tolerance)
     regret_bound = scale * (
         math.log(max(2, max_actions)) / (eta * completed) + eta / 8.0
     )
@@ -124,4 +140,6 @@ def solve_cce(policy_sets, payoffs, iterations=5000, tolerance=0.01,
         "iterations": completed,
         "eta": eta,
         "external_regret_bound": regret_bound,
+        "raw_support_size": raw_support_size,
+        "support_size": len(distribution),
     }

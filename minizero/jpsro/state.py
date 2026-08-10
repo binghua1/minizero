@@ -178,6 +178,29 @@ class JPSROState:
         )
         self.save()
 
+    def set_policy_players(self, policy_id, players, metadata=None):
+        if policy_id not in self.policies:
+            raise ValueError(f"unknown policy: {policy_id}")
+        players = tuple(sorted(set(int(player) for player in players)))
+        if not players or any(player < 0 or player >= self.num_players for player in players):
+            raise ValueError("policy must belong to at least one valid player")
+        policy = self.policies[policy_id]
+        merged_metadata = dict(policy.metadata)
+        merged_metadata.update(metadata or {})
+        self.policies[policy_id] = dataclasses.replace(
+            policy, players=players, metadata=merged_metadata)
+        self.save()
+
+    def remove_policy(self, policy_id):
+        if policy_id not in self.policies:
+            raise ValueError(f"unknown policy: {policy_id}")
+        del self.policies[policy_id]
+        self.payoffs.entries = {
+            key: entry for key, entry in self.payoffs.entries.items()
+            if policy_id not in entry["profile"]
+        }
+        self.save()
+
     def policy_sets(self):
         return [
             [policy_id for policy_id, policy in self.policies.items() if player in policy.players]

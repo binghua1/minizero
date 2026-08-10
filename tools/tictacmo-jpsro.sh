@@ -9,10 +9,11 @@ usage() {
     cat <<'EOF'
 Usage: tools/tictacmo-jpsro.sh RUN_DIR CONFIG.cfg
 
-Train one from-scratch, fixed-budget TicTacMo JPSRO run. The default generation
-boundaries are 5,15,30. Set JPSRO_ORACLE_INTERVAL and JPSRO_TOTAL_ITERATIONS to
-generate regular boundaries automatically. Re-running the same command resumes
-an interrupted run.
+Train one from-scratch Adaptive JPSRO-guided AlphaZero run. Normal all-seat
+self-play preserves AlphaZero data efficiency; the remaining workers train
+against CCE-selected joint opponents. Candidates are tested every oracle
+interval and enter only the player pools where their lower-confidence gain is
+positive. Re-running the same command resumes an interrupted run.
 EOF
 }
 
@@ -43,7 +44,6 @@ policy_registered() {
 train_to() {
     local end_iteration=$1
     local profile_file=${2:-}
-    local replay_start=${3:-1}
     if (( $(completed_iterations) >= end_iteration )); then
         echo "training already reached iteration $end_iteration"
         return
@@ -51,7 +51,7 @@ train_to() {
 
     local conf="$common_conf:zero_use_jpsro=false"
     if [[ -n "$profile_file" ]]; then
-        conf="$common_conf:zero_use_jpsro=true:zero_jpsro_profile_file=$profile_file:zero_jpsro_replay_start_iteration=$replay_start"
+        conf="$common_conf:zero_use_jpsro=true:zero_jpsro_profile_file=$profile_file"
     fi
     local args=(tools/quick-run.sh train tictacmo "$config" "$end_iteration"
                 -n "$training_dir" -g "$gpu" -p "$port"
@@ -82,8 +82,8 @@ evaluate_profiles() {
 }
 
 freeze_policy() {
-    local generation=$1
-    local policy_id="p$generation"
+    local policy_id=$1
+    local generation=$2
     local model="$frozen_dir/$policy_id.pt"
     [[ -f "$model" ]] || cp "$(latest_model)" "$model"
     if ! policy_registered "$policy_id"; then
@@ -92,9 +92,9 @@ freeze_policy() {
 }
 
 solve_meta() {
-    local generation=$1
+    local label=$1
     python3 tools/jpsro.py solve "$meta_dir" --min-games "$eval_games" --tolerance "$tolerance"
-    cp "$meta_dir/meta_strategy.json" "$meta_dir/meta_strategy_g${generation}.json"
+    cp "$meta_dir/meta_strategy.json" "$meta_dir/meta_strategy_${label}.json"
 }
 
 [[ $# -eq 2 ]] || { usage; exit 2; }
@@ -107,60 +107,48 @@ case "$run_dir" in
 esac
 [[ "$run_dir" != *[,:[:space:]]* ]] || die "RUN_DIR cannot contain spaces, commas, or colons"
 
-if [[ -n ${JPSRO_BOUNDARIES:-} ]]; then
-    boundaries_string=$JPSRO_BOUNDARIES
-elif [[ -n ${JPSRO_ORACLE_INTERVAL:-} || -n ${JPSRO_TOTAL_ITERATIONS:-} || -n ${JPSRO_BOOTSTRAP_ITERATIONS:-} ]]; then
-    bootstrap_iterations=${JPSRO_BOOTSTRAP_ITERATIONS:-5}
-    oracle_interval=${JPSRO_ORACLE_INTERVAL:-5}
-    total_iterations=${JPSRO_TOTAL_ITERATIONS:-30}
-    for value in "$bootstrap_iterations" "$oracle_interval" "$total_iterations"; do
-        [[ "$value" =~ ^[1-9][0-9]*$ ]] || die "automatic iteration settings must be positive integers"
-    done
-    (( bootstrap_iterations < total_iterations )) || die "bootstrap iterations must be below total iterations"
-    boundaries_string=$bootstrap_iterations
-    boundary=$bootstrap_iterations
-    while (( boundary < total_iterations )); do
-        boundary=$((boundary + oracle_interval))
-        (( boundary > total_iterations )) && boundary=$total_iterations
-        boundaries_string+=",$boundary"
-    done
-else
-    boundaries_string=5,15,30
-fi
-IFS=, read -ra boundaries <<< "$boundaries_string"
-(( ${#boundaries[@]} >= 2 )) || die "JPSRO_BOUNDARIES needs bootstrap and at least one oracle boundary"
-previous=0
-for boundary in "${boundaries[@]}"; do
-    [[ "$boundary" =~ ^[1-9][0-9]*$ ]] || die "invalid boundary: $boundary"
-    (( boundary > previous )) || die "boundaries must be strictly increasing"
-    previous=$boundary
-done
-
 gpu=${JPSRO_GPU:-0}
-sp_gpu=${JPSRO_SP_GPU:-$gpu}
+bootstrap_iterations=${JPSRO_BOOTSTRAP_ITERATIONS:-5}
+oracle_interval=${JPSRO_ORACLE_INTERVAL:-5}
+total_iterations=${JPSRO_TOTAL_ITERATIONS:-30}
 games=${JPSRO_GAMES_PER_ITERATION:-2000}
 training_steps=${JPSRO_TRAINING_STEPS:-500}
 learner_batch=${JPSRO_LEARNER_BATCH:-1024}
-selfplay_batch=${JPSRO_SELFPLAY_BATCH:-32}
+selfplay_workers=${JPSRO_SELFPLAY_WORKERS:-4}
+selfplay_batch=${JPSRO_SELFPLAY_BATCH:-64}
+selfplay_ratio=${JPSRO_SELFPLAY_RATIO:-0.7}
 cpu_threads=${JPSRO_CPU_THREADS:-4}
-eval_games=${JPSRO_EVAL_GAMES:-8}
-eval_threads=${JPSRO_EVAL_THREADS:-2}
+eval_games=${JPSRO_EVAL_GAMES:-20}
+eval_threads=${JPSRO_EVAL_THREADS:-4}
 eval_noise=${JPSRO_EVAL_NOISE:-true}
 simulations=${JPSRO_SIMULATIONS:-50}
 seed=${JPSRO_SEED:-0}
 tolerance=${JPSRO_TOLERANCE:-0.01}
+admission_gain=${JPSRO_ADMISSION_GAIN:-0.02}
+admission_confidence=${JPSRO_ADMISSION_CONFIDENCE:-2.0}
 port=${JPSRO_PORT:-10021}
+
+for value in "$bootstrap_iterations" "$oracle_interval" "$total_iterations" "$selfplay_workers" "$selfplay_batch"; do
+    [[ "$value" =~ ^[1-9][0-9]*$ ]] || die "iteration and self-play parallelism settings must be positive integers"
+done
+(( bootstrap_iterations < total_iterations )) || die "bootstrap iterations must be below total iterations"
+python3 -c 'import sys; value=float(sys.argv[1]); assert 0 <= value <= 1' "$selfplay_ratio" || die "JPSRO_SELFPLAY_RATIO must be between 0 and 1"
+worker_gpu=${JPSRO_SELFPLAY_GPU:-$gpu}
+[[ "$worker_gpu" =~ ^[0-9]$ ]] || die "JPSRO_SELFPLAY_GPU must be one GPU index"
+sp_gpu=""
+for ((worker = 0; worker < selfplay_workers; ++worker)); do sp_gpu+="$worker_gpu"; done
 
 config="$run_dir/tictacmo.cfg"
 training_dir="$run_dir/training"
 meta_dir="$run_dir/meta"
 frozen_dir="$run_dir/frozen"
 executable="$repo_root/build/tictacmo/minizero_tictacmo"
-settings_file="$run_dir/budgeted_jpsro.settings"
-settings="boundaries=$boundaries_string games=$games steps=$training_steps learner_batch=$learner_batch selfplay_batch=$selfplay_batch cpu_threads=$cpu_threads eval_games=$eval_games eval_noise=$eval_noise simulations=$simulations seed=$seed"
-common_conf="zero_use_population=false:zero_disable_resign_ratio=1:zero_num_games_per_iteration=$games:learner_training_step=$training_steps:learner_batch_size=$learner_batch:actor_num_simulation=$simulations:program_auto_seed=false:program_seed=$seed"
+settings_file="$run_dir/adaptive_jpsro.settings"
+settings="version=2 bootstrap=$bootstrap_iterations interval=$oracle_interval total=$total_iterations games=$games steps=$training_steps learner_batch=$learner_batch selfplay_workers=$selfplay_workers selfplay_batch=$selfplay_batch selfplay_ratio=$selfplay_ratio cpu_threads=$cpu_threads eval_games=$eval_games eval_noise=$eval_noise simulations=$simulations seed=$seed admission_gain=$admission_gain admission_confidence=$admission_confidence"
+common_conf="zero_use_population=false:zero_jpsro_selfplay_ratio=$selfplay_ratio:zero_jpsro_num_workers=$selfplay_workers:zero_disable_resign_ratio=1:zero_num_games_per_iteration=$games:learner_training_step=$training_steps:learner_batch_size=$learner_batch:actor_num_simulation=$simulations:program_auto_seed=false:program_seed=$seed"
 
 mkdir -p "$run_dir" "$frozen_dir"
+[[ ! -f "$run_dir/budgeted_jpsro.settings" ]] || die "old fixed-JPSRO run detected; use a new RUN_DIR for the adaptive method"
 if [[ -f "$settings_file" ]]; then
     [[ "$(<"$settings_file")" == "$settings" ]] || die "resume settings differ from $settings_file"
 else
@@ -168,31 +156,39 @@ else
 fi
 [[ -f "$config" ]] || cp "$source_config" "$config"
 
-# Generation 0 is the in-run bootstrap policy, not an external AlphaZero baseline.
-bootstrap_end=${boundaries[0]}
-train_to "$bootstrap_end"
+# p0 is a short in-run bootstrap, never an external AlphaZero warm start.
+train_to "$bootstrap_iterations"
 if [[ ! -f "$run_dir/.generation_0_complete" ]]; then
     [[ -d "$meta_dir" ]] || python3 tools/jpsro.py init "$meta_dir" --players 3 --shared-pool
-    freeze_policy 0
+    freeze_policy p0 0
     evaluate_profiles "$run_dir/eval_g0_full"
-    solve_meta 0
+    solve_meta g0
     touch "$run_dir/.generation_0_complete"
 fi
 
-for ((generation = 1; generation < ${#boundaries[@]}; ++generation)); do
-    marker="$run_dir/.generation_${generation}_complete"
+end_iteration=$bootstrap_iterations
+while (( end_iteration < total_iterations )); do
+    end_iteration=$((end_iteration + oracle_interval))
+    (( end_iteration > total_iterations )) && end_iteration=$total_iterations
+    marker="$run_dir/.candidate_${end_iteration}_complete"
     [[ -f "$marker" ]] && continue
-    start_iteration=$((boundaries[generation - 1] + 1))
-    end_iteration=${boundaries[generation]}
-    profile_file="$run_dir/oracle_g${generation}.tsv"
+    candidate="p$end_iteration"
+    profile_file="$run_dir/oracle_i${end_iteration}.tsv"
     python3 tools/jpsro.py oracle-plan "$meta_dir" "$profile_file" --responders all
-    train_to "$end_iteration" "$profile_file" "$start_iteration"
+    train_to "$end_iteration" "$profile_file"
 
-    freeze_policy "$generation"
-    evaluate_profiles "$run_dir/eval_g${generation}_deviation" "p$generation"
-    python3 tools/jpsro.py deviation-gap "$meta_dir" "p$generation" | tee "$run_dir/deviation_g${generation}.json"
-    evaluate_profiles "$run_dir/eval_g${generation}_full"
-    solve_meta "$generation"
+    freeze_policy "$candidate" "$end_iteration"
+    evaluate_profiles "$run_dir/eval_i${end_iteration}_deviation" "$candidate"
+    decision="$run_dir/admission_i${end_iteration}.json"
+    python3 tools/jpsro.py admit-candidate "$meta_dir" "$candidate" \
+        --min-gain "$admission_gain" --confidence "$admission_confidence" --output "$decision"
+    if [[ $(python3 -c 'import json,sys; print(str(json.load(open(sys.argv[1]))["accepted"]).lower())' "$decision") == true ]]; then
+        evaluate_profiles "$run_dir/eval_i${end_iteration}_full"
+        solve_meta "i$end_iteration"
+    else
+        rm -f "$frozen_dir/$candidate.pt"
+        echo "candidate $candidate rejected; continuing with the certified pool"
+    fi
     touch "$marker"
 done
 

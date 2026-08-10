@@ -176,6 +176,28 @@ def candidate_deviation_gains(state, candidate_id):
     return result
 
 
+def admit_candidate(state, candidate_id, min_gain=0.02, confidence=2.0):
+    """Keep a candidate only in player pools with positive lower-bound gain."""
+    gains = candidate_deviation_gains(state, candidate_id)
+    eligible = [
+        item["player"] for item in gains
+        if item["gain"] - confidence * item["standard_error"] > min_gain
+    ]
+    result = {
+        "candidate": candidate_id,
+        "accepted": bool(eligible),
+        "eligible_players": eligible,
+        "confidence_multiplier": confidence,
+        "minimum_gain": min_gain,
+        "per_player": gains,
+    }
+    if eligible:
+        state.set_policy_players(candidate_id, eligible, {"admission": result})
+    else:
+        state.remove_policy(candidate_id)
+    return result
+
+
 def atomic_json(path, value):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
