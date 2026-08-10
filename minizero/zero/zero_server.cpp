@@ -542,7 +542,11 @@ void ZeroServer::optimization()
 
     std::string job_command = "train ";
     job_command += "weight_iter_" + std::to_string(shared_data_.getModelIetration()) + ".pkl";
-    job_command += " " + std::to_string(std::max(1, iteration_ - config::zero_replay_buffer + 1));
+    int replay_start = std::max(1, iteration_ - config::zero_replay_buffer + 1);
+    if (config::zero_use_jpsro) {
+        replay_start = std::max(replay_start, config::zero_jpsro_replay_start_iteration);
+    }
+    job_command += " " + std::to_string(replay_start);
     job_command += " " + std::to_string(iteration_);
 
     shared_data_.is_optimization_phase_ = true;

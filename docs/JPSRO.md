@@ -23,65 +23,47 @@ response, and measures its deviation gain.
 
 Normal AlphaZero is unchanged when `zero_use_jpsro=false`.
 
-## Reproducible TicTacMo from-scratch experiment
+## Automatic budgeted TicTacMo training
 
-`tools/tictacmo-jpsro.sh` compares the two training objectives without a
-pretrained checkpoint:
+`tools/tictacmo-jpsro.sh` runs one from-scratch training directory and performs
+the JPSRO generation boundaries automatically. No external AlphaZero model is
+loaded. With the default boundaries `5,15,30` it:
 
-- `baseline_p0` is ordinary multiplayer AlphaZero from a seeded random
-  initialization. Its middle and final checkpoints form the initial finite
-  population, so the first CCE is not forced to be a one-policy point mass.
-- `oracle_p1` starts from the same seeded random initialization, with the same
-  iterations, games, learner steps, batch size, and MCTS simulations. Its only
-  method-level difference is `zero_use_jpsro=true`, which trains one rotating
-  responder seat against the CCE opponent profiles induced by the two frozen
-  baseline checkpoints.
+1. trains iterations 1--5 from random initialization and freezes `p0`;
+2. evaluates `p0`, solves its initial CCE, and writes the first oracle plan;
+3. continues the same learner through iteration 15 against that plan, freezes
+   `p1`, fills the expanded payoff table, and updates the CCE;
+4. continues through iteration 30 against the new CCE, freezes `p2`, and
+   writes the final empirical CCE and deviation reports.
 
-Run all stages inside the MiniZero container:
-
-```bash
-tools/tictacmo-jpsro.sh all runs/tictacmo_jpsro_s0 path/to/tictacmo.cfg
-```
-
-For a safer long run, execute the restart boundaries separately:
+Run it inside the MiniZero container:
 
 ```bash
-tools/tictacmo-jpsro.sh baseline runs/tictacmo_jpsro_s0 path/to/tictacmo.cfg
-tools/tictacmo-jpsro.sh oracle   runs/tictacmo_jpsro_s0
-tools/tictacmo-jpsro.sh evaluate runs/tictacmo_jpsro_s0
+tools/tictacmo-jpsro.sh runs/tictacmo_jpsro_s0 path/to/tictacmo.cfg
 ```
 
-An existing multiplayer AlphaZero run can be reused as the initial population;
-this skips baseline training but gives up an exactly paired initialization:
+The command is restartable: running the identical command again continues the
+current training phase and resumes arena games. The defaults match the existing
+TicTacMo budget: 2000 games and 500 learner steps per iteration, learner batch
+1024, 50 MCTS simulations, self-play batch 32, four CPU threads, and seed 0.
+
+Set generation boundaries explicitly for a different total budget:
 
 ```bash
-tools/tictacmo-jpsro.sh reuse runs/tictacmo_jpsro_s0 \
-  path/to/existing_training_dir path/to/tictacmo.cfg
-tools/tictacmo-jpsro.sh oracle   runs/tictacmo_jpsro_s0
-tools/tictacmo-jpsro.sh evaluate runs/tictacmo_jpsro_s0
+JPSRO_BOUNDARIES=50,100,150,200,250,300 \
+  tools/tictacmo-jpsro.sh runs/tictacmo_jpsro_300_s0 path/to/tictacmo.cfg
 ```
 
-The defaults match the existing TicTacMo experiment: 30 iterations, 2000
-games per iteration, 500 learner steps, learner batch size 1024, 50 MCTS
-simulations, self-play batch 32, four CPU threads, and seed 0. For example,
-change both training budgets together with:
+Other overrides are `JPSRO_GAMES_PER_ITERATION`, `JPSRO_TRAINING_STEPS`,
+`JPSRO_LEARNER_BATCH`, `JPSRO_SELFPLAY_BATCH`, `JPSRO_CPU_THREADS`,
+`JPSRO_EVAL_GAMES`, `JPSRO_EVAL_THREADS`, `JPSRO_EVAL_NOISE`,
+`JPSRO_SIMULATIONS`, `JPSRO_GPU`, `JPSRO_SEED`, `JPSRO_PORT`, and
+`JPSRO_TOLERANCE`.
 
-```bash
-JPSRO_ITERATIONS=20 JPSRO_TRAINING_STEPS=500 \
-  tools/tictacmo-jpsro.sh all runs/tictacmo_jpsro_s0 path/to/tictacmo.cfg
-```
-
-Other overrides are `JPSRO_GAMES_PER_ITERATION`, `JPSRO_LEARNER_BATCH`,
-`JPSRO_SELFPLAY_BATCH`, `JPSRO_CPU_THREADS`, `JPSRO_EVAL_GAMES`,
-`JPSRO_EVAL_THREADS`, `JPSRO_SIMULATIONS`, `JPSRO_GPU`, `JPSRO_SEED`, and
-`JPSRO_TOLERANCE`. `JPSRO_BASELINE_MID_ITERATION` selects the earlier baseline
-checkpoint and defaults to half of `JPSRO_ITERATIONS`.
-
-The single-model result is `oracle_p1/model/weight_iter_*.pt`. The population
-result is `meta/meta_strategy.json`: sample one whole joint profile once per
-game to preserve its CCE correlation. If an external evaluator accepts only
-one checkpoint, use and report `p1`; if it accepts a population, use the joint
-distribution and report both its empirical CCE gap and match results.
+`training/model/` contains the continuously warm-started learner checkpoints;
+`frozen/p*.pt` are immutable population members. The latest checkpoint is the
+single-model result. `meta/meta_strategy.json` is the population result: sample
+one whole joint profile once per game to preserve CCE correlation.
 
 ## Formulas and guarantees
 
@@ -160,6 +142,9 @@ New MiniZero configuration:
 - `zero_use_jpsro` (default `false`): enable oracle-profile training.
 - `zero_jpsro_profile_file` (default empty): absolute path to the TSV generated
   by `oracle-plan`.
+- `zero_jpsro_replay_start_iteration` (default `1`): first replay iteration
+  belonging to the current response oracle. The automatic controller advances
+  it at each generation boundary.
 
 Set `zero_use_population=false`; the server rejects enabling both modes.
 
@@ -237,13 +222,10 @@ selected profile, not the full population.
 
 `tools/quick-run.sh -b` controls self-play parallel games and therefore the
 neural-network inference batch. It is different from `learner_batch_size`,
-which only changes optimizer batches. When several policy networks fragment
-inference work, increasing `-b` is the first throughput adjustment. For the
-small TicTacMo network on one GPU, start with `-b 96 -c 12` instead of the old
-`-b 32 -c 4`, then lower `-b` only if GPU memory is insufficient. A larger
-`learner_batch_size` does not recover self-play batching; 1024 is already a
-large TicTacMo optimizer batch, while 2048 is an optional memory-dependent
-experiment.
+which only changes optimizer batches. The automatic experiment retains
+`-b 32 -c 4` so that the primary compute-matched comparison changes as few
+variables as possible. Increasing `-b` is an optional throughput experiment,
+not part of the primary result.
 
 Only one of (n) seats is trainable in each oracle game. This reduces usable
 replay positions per game to about (1/n), but it does not make each MCTS game
