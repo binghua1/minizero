@@ -3,8 +3,10 @@
 This branch uses JPSRO as a certified multiplayer opponent-pool manager while
 keeping ordinary AlphaZero self-play as the main data source. It is intended
 for symmetric, general-sum AlphaZero games with two to six players. The first
-controller is `tools/tictacmo-jpsro.sh`; the C++ and Python JPSRO layers are
-game-independent.
+controller is `tools/multiplayer-jpsro.sh`; its current tested games are
+TicTacMo and Connect3x3, while the C++ and Python JPSRO layers are
+game-independent. `tools/tictacmo-jpsro.sh RUN_DIR CONFIG` remains as a
+backward-compatible shorthand.
 
 ## Why this is not pure JPSRO
 
@@ -116,13 +118,30 @@ JPSRO_SELFPLAY_RATIO=0.7 \
 JPSRO_EVAL_BATCH=64 \
 JPSRO_EVAL_THREADS=4 \
 JPSRO_PORT=10021 \
-tools/tictacmo-jpsro.sh \
+tools/multiplayer-jpsro.sh tictacmo \
   runs/tictacmo_adaptive_jpsro_s0 \
   tictacmo_jpsro.cfg
 ```
 
 This is a fresh run: no external Multiplayer AlphaZero checkpoint is loaded.
 Do not reuse a directory created by the old fixed `5,15,30` controller.
+
+For matched schedules with nine candidate checks, use `5/5/50`
+(bootstrap/interval/total) for TicTacMo and `10/10/100` for Connect3x3:
+
+```bash
+# TicTacMo: p0 at 5, then candidates p10 ... p50.
+JPSRO_BOOTSTRAP_ITERATIONS=5 JPSRO_ORACLE_INTERVAL=5 \
+JPSRO_TOTAL_ITERATIONS=50 JPSRO_PORT=10021 \
+tools/multiplayer-jpsro.sh tictacmo \
+  runs/tictacmo_adaptive_jpsro_50_s0 tictacmo_jpsro_50.cfg
+
+# Connect3x3: p0 at 10, then candidates p20 ... p100.
+JPSRO_BOOTSTRAP_ITERATIONS=10 JPSRO_ORACLE_INTERVAL=10 \
+JPSRO_TOTAL_ITERATIONS=100 JPSRO_PORT=10022 \
+tools/multiplayer-jpsro.sh connect3x3 \
+  runs/connect3x3_adaptive_jpsro_100_s0 connect3x3_jpsro_100.cfg
+```
 
 `JPSRO_SELFPLAY_WORKERS=4` launches four worker processes.
 `JPSRO_SELFPLAY_BATCH=64` runs 64 actors concurrently inside each process, for
