@@ -1,272 +1,181 @@
-# MiniZero JPSRO
+# Adaptive JPSRO-guided AlphaZero
 
-This branch adds a game-independent JPSRO layer for two to six player
-MiniZero AlphaZero environments. It is separate from `zero_use_population`:
-the old population sampler is a training heuristic, while JPSRO explicitly
-stores an empirical game, solves a joint meta-strategy, trains a unilateral
-response, and measures its deviation gain.
+This branch uses JPSRO as a certified multiplayer opponent-pool manager while
+keeping ordinary AlphaZero self-play as the main data source. It is intended
+for symmetric, general-sum AlphaZero games with two to six players. The first
+controller is `tools/tictacmo-jpsro.sh`; the C++ and Python JPSRO layers are
+game-independent.
 
-## Components
+## Why this is not pure JPSRO
 
-- A frozen-policy registry in `policies.json`.
-- An ordered joint payoff table with online means, variances, and counts in
-  `payoffs.json`.
-- A dependency-free no-regret CCE solver and empirical certificate in
-  `meta_strategy.json`.
-- Evaluation manifest generation and ingestion through
-  `tools/multiplayer-eval.py`.
-- A weighted oracle plan consumed by `ZeroServer`.
-- Per-seat neural networks in `ZeroActor`; exactly one responder seat is
-  trainable and all other seats use frozen policies.
-- A shared physical pool for symmetric games such as Blokus, while each joint
-  profile may still assign different policies to different seats.
+Pure JPSRO trains one unilateral best-response seat per game. In an
+`n`-player game that retains only about `1/n` of the positions for the learner.
+The 30-iteration TicTacMo pilot consequently lost to the compute-matched
+Multiplayer AlphaZero baseline, especially in 1-vs-2 play.
 
-Normal AlphaZero is unchanged when `zero_use_jpsro=false`.
+The adaptive method separates two goals:
 
-## Automatic budgeted TicTacMo training
+- AlphaZero all-seat self-play preserves general strength and data throughput.
+- JPSRO supplies correlated joint opponents and an empirical CCE certificate
+  for the frozen population.
 
-`tools/tictacmo-jpsro.sh` runs one from-scratch training directory and performs
-the JPSRO generation boundaries automatically. No external AlphaZero model is
-loaded. With the default boundaries `5,15,30` it:
+The certificate applies to the population meta-strategy, not to the final
+single current network's external win rate.
 
-1. trains iterations 1--5 from random initialization and freezes `p0`;
-2. evaluates `p0`, solves its initial CCE, and writes the first oracle plan;
-3. continues the same learner through iteration 15 against that plan, freezes
-   `p1`, fills the expanded payoff table, and updates the CCE;
-4. continues through iteration 30 against the new CCE, freezes `p2`, and
-   writes the final empirical CCE and deviation reports.
+## Training mixture
 
-Run it inside the MiniZero container:
-
-```bash
-tools/tictacmo-jpsro.sh runs/tictacmo_jpsro_s0 path/to/tictacmo.cfg
-```
-
-The command is restartable: running the identical command again continues the
-current training phase and resumes arena games. The defaults match the existing
-TicTacMo budget: 2000 games and 500 learner steps per iteration, learner batch
-1024, 50 MCTS simulations, self-play batch 32, four CPU threads, and seed 0.
-
-Set generation boundaries explicitly for a different total budget:
-
-```bash
-JPSRO_BOUNDARIES=50,100,150,200,250,300 \
-  tools/tictacmo-jpsro.sh runs/tictacmo_jpsro_300_s0 path/to/tictacmo.cfg
-```
-
-Alternatively, generate oracle boundaries automatically until a fixed total:
-
-```bash
-JPSRO_BOOTSTRAP_ITERATIONS=5 JPSRO_ORACLE_INTERVAL=5 JPSRO_TOTAL_ITERATIONS=30 \
-  tools/tictacmo-jpsro.sh runs/tictacmo_jpsro_auto_s0 path/to/tictacmo.cfg
-```
-
-This produces boundaries `5,10,15,20,25,30`, hence six frozen policies. For
-three players, a complete final payoff table then contains `6^3 = 216` ordered
-profiles. Arena repeats of one profile are automatically sharded when there are
-fewer profiles than evaluation workers, and duplicate policies within a lineup
-share one persistent console engine per worker.
-
-Other overrides are `JPSRO_GAMES_PER_ITERATION`, `JPSRO_TRAINING_STEPS`,
-`JPSRO_LEARNER_BATCH`, `JPSRO_SELFPLAY_BATCH`, `JPSRO_CPU_THREADS`,
-`JPSRO_EVAL_GAMES`, `JPSRO_EVAL_THREADS`, `JPSRO_EVAL_NOISE`,
-`JPSRO_SIMULATIONS`, `JPSRO_GPU`, `JPSRO_SP_GPU`, `JPSRO_SEED`, `JPSRO_PORT`, and
-`JPSRO_TOLERANCE`. Automatic generation uses `JPSRO_BOOTSTRAP_ITERATIONS`,
-`JPSRO_ORACLE_INTERVAL`, and `JPSRO_TOTAL_ITERATIONS`; explicit
-`JPSRO_BOUNDARIES` takes precedence.
-
-`JPSRO_GPU=0 JPSRO_SP_GPU=0000` keeps the learner on GPU 0 while launching four
-self-play worker processes on that same GPU. Each worker uses
-`JPSRO_SELFPLAY_BATCH` parallel games, so this setting multiplies both
-self-play concurrency and worker model memory by four.
-
-`training/model/` contains the continuously warm-started learner checkpoints;
-`frozen/p*.pt` are immutable population members. The latest checkpoint is the
-single-model result. `meta/meta_strategy.json` is the population result: sample
-one whole joint profile once per game to preserve CCE correlation. Each solved
-generation is also preserved as `meta/meta_strategy_g0.json`,
-`meta/meta_strategy_g1.json`, and so on; `meta_strategy.json` always points to
-the latest solved generation.
-
-## Formulas and guarantees
-
-For player (i), let (\Pi_i) be its finite policy population and let
-(u_i(\boldsymbol\pi)) be its payoff under ordered joint profile
-(\boldsymbol\pi=(\pi_1,\ldots,\pi_n)). The stored empirical payoff is
+Let `rho = zero_jpsro_selfplay_ratio`. At each iteration the server assigns a
+stratified fraction of self-play workers to:
 
 \[
-\hat u_i(\boldsymbol\pi)=\frac{1}{m_{\boldsymbol\pi}}
-\sum_{g=1}^{m_{\boldsymbol\pi}}r_{i,g}.
+\rho\,\text{CURRENT-vs-CURRENT all-seat self-play}
+ +(1-\rho)\,\text{one-responder JPSRO games}.
 \]
 
-A distribution (\sigma) over joint profiles is an (\epsilon)-CCE when
+All positions from a normal self-play game are trainable. Only the CURRENT
+responder's positions are trainable in a JPSRO game. The expected retained
+position fraction relative to ordinary AlphaZero is approximately
+
+\[
+\rho + \frac{1-\rho}{n}.
+\]
+
+For three players and `rho=0.7`, this is `0.8`, rather than pure JPSRO's
+`1/3`. The normal rolling replay buffer is retained across candidate checks.
+
+Opponent profiles are sampled jointly from the CCE. Independently sampling
+each player's marginal would destroy the CCE correlation.
+
+The server enforces the ratio on accepted games, not merely on launched
+workers. Faster ordinary workers cannot fill the iteration before the required
+opponent-game quota arrives. With 2000 games and `rho=0.7`, the saved replay is
+exactly 1400 ordinary games and 600 JPSRO opponent games.
+
+## Adaptive population admission
+
+At each candidate boundary, the current checkpoint is evaluated as a
+unilateral deviation for every player. For player `i`, it is added to
+`Pi_i` only when
+
+\[
+\widehat g_i-c\,SE(\widehat g_i)>\delta.
+\]
+
+`delta` is `JPSRO_ADMISSION_GAIN` and `c` is
+`JPSRO_ADMISSION_CONFIDENCE`. A shared checkpoint may therefore be admitted
+for player 1 but rejected for players 0 and 2. If no player passes, the
+candidate is removed and training continues against the previous certified
+pool.
+
+This avoids the pilot's error of placing one shared candidate in every seat
+when it improved only one or two seats.
+
+## CCE formula and support compaction
+
+For player `i`, finite policy set `Pi_i`, ordered joint profile `pi`, and
+empirical payoff `u_hat_i(pi)`, a distribution `sigma` is an epsilon-CCE when
 
 \[
 \max_{i,\pi'_i\in\Pi_i}
 \sum_{\boldsymbol\pi}\sigma(\boldsymbol\pi)
-\left[\hat u_i(\pi'_i,\boldsymbol\pi_{-i})-
-      \hat u_i(\boldsymbol\pi)\right]\le\epsilon.
+\left[
+\hat u_i(\pi'_i,\boldsymbol\pi_{-i})-
+\hat u_i(\boldsymbol\pi)
+\right]\le\epsilon.
 \]
 
-`tools/jpsro.py solve` reports the left side as `gap`. This is an exact
-certificate for the **complete empirical restricted game** represented by the
-stored payoff means. It is not automatically a certificate for the original
-game. That stronger statement additionally requires exact expected payoffs and
-exact best-response oracles. With finite matches and AlphaZero as an
-approximate oracle, this is scalable approximate JPSRO. The payoff standard
-errors and frozen-candidate gains make the approximation visible.
+The solver first obtains a CCE on the complete current restricted game. It
+then tries top-probability supports from smallest to largest, renormalizes each
+one, and recomputes every restricted unilateral-deviation constraint. A
+compact support is saved only if its measured gap remains below `epsilon`.
+Therefore support compaction does not weaken the empirical restricted-game
+certificate.
 
-The meta-solver uses simultaneous full-information Hedge. At step (t),
+A rejected candidate requires only about `|S| * n` deviation profiles, where
+`S` is the compact CCE support. An admitted candidate still triggers the
+missing payoff evaluations needed for the new complete restricted game. This
+is deliberate: skipping those payoffs would make the reported CCE certificate
+invalid. Per-player admission keeps that product much smaller than a shared
+`K^n` pool.
 
-\[
-q_i^t(a)=\frac{\exp(w_{i,a}^t)}{\sum_b\exp(w_{i,b}^t)},\qquad
-w_{i,a}^{t+1}=w_{i,a}^t+\eta\,\tilde u_i(a,q_{-i}^t),
-\]
+Payoffs are finite-sample estimates, so this is an **empirical restricted-game
+CCE guarantee**. Full-game convergence additionally requires exact expected
+payoffs, exact best responses, unlimited population growth, and no fixed
+training budget; neural MCTS training does not satisfy those assumptions.
 
-where (\tilde u\in[0,1]) is the configured normalized utility. The output is
-(\sigma_T=T^{-1}\sum_t\prod_iq_i^t). For payoff range
-(R=u_{max}-u_{min}), the reported conservative Hedge bound is
+## Run from scratch
 
-\[
-R\left(\frac{\log |\Pi|}{\eta T}+\frac{\eta}{8}\right).
-\]
-
-The measured empirical gap is normally the useful stopping signal.
-
-## Why only one trainable seat
-
-A JPSRO oracle estimates a unilateral deviation:
-
-\[
-BR_i(\sigma)=\arg\max_{\pi'_i}
-\mathbb E_{\boldsymbol\pi\sim\sigma}
-[u_i(\pi'_i,\boldsymbol\pi_{-i})].
-\]
-
-Each oracle game therefore marks exactly one responder seat `TR=1`. Moves from
-all other seats are `TR=0`, and the existing replay loader excludes them. For a
-shared-policy Blokus run, the responder position rotates, so one network learns
-all four positions without turning a game into four simultaneous deviations.
-The 1v3, 2v2, and 3v1 compositions still exist as payoff/evaluation profiles;
-they are not simultaneous trainable deviations.
-
-## Recorded fields and parameters
-
-`ZeroActor` records:
-
-- `JI`: oracle profile identifier.
-- `JP`: policy ID assigned to every seat.
-- `TM`: profile-level trainable mask.
-- `PI`: policy ID that produced a move.
-- `TR`: whether that move may enter replay.
-
-New MiniZero configuration:
-
-- `zero_use_jpsro` (default `false`): enable oracle-profile training.
-- `zero_jpsro_profile_file` (default empty): absolute path to the TSV generated
-  by `oracle-plan`.
-- `zero_jpsro_replay_start_iteration` (default `1`): first replay iteration
-  belonging to the current response oracle. The automatic controller advances
-  it at each generation boundary.
-
-Set `zero_use_population=false`; the server rejects enabling both modes.
-
-Workflow and solver parameters:
-
-- `--shared-pool`: allow every logical player to use the same frozen artifacts.
-- `--utility-min`, `--utility-max`: known payoff range used by Hedge.
-- `--games-per-profile`: arena repeats for each ordered profile. Enable noise or
-  random rotations if deterministic repeats would be identical.
-- `--min-games`: samples required before a payoff is accepted.
-- `--iterations`: maximum CPU-only Hedge updates.
-- `--tolerance`: target empirical CCE gap.
-- `--eta`: optional Hedge learning rate; normally leave unset.
-- `--responders`: zero-based seats trained by an oracle plan. Use `all` for
-  shared-policy Blokus.
-- `--max-profiles`: split a large payoff evaluation into batches.
-
-## One generation
-
-Start with a frozen four-player Blokus10 policy:
+Inside the MiniZero container:
 
 ```bash
-python3 tools/jpsro.py init runs/blokus10_jpsro --players 4 --shared-pool
-python3 tools/jpsro.py add-policy runs/blokus10_jpsro p0 /abs/path/weight_iter_50000.pt
-
-python3 tools/jpsro.py make-eval runs/blokus10_jpsro runs/blokus10_jpsro/eval_g0/arena.json \
-  --game blokus10 --conf-file /abs/path/blokus10.cfg \
-  --executable build/blokus10/minizero_blokus10 --games-per-profile 8 \
-  --num-simulations 50 --noise
-python3 tools/multiplayer-eval.py runs/blokus10_jpsro/eval_g0/arena.json \
-  runs/blokus10_jpsro/eval_g0 -g 0 --num_threads 2
-python3 tools/jpsro.py ingest runs/blokus10_jpsro \
-  runs/blokus10_jpsro/eval_g0/arena.json runs/blokus10_jpsro/eval_g0/games.jsonl
-python3 tools/jpsro.py solve runs/blokus10_jpsro --min-games 8 --tolerance 0.01
-
-python3 tools/jpsro.py oracle-plan runs/blokus10_jpsro \
-  runs/blokus10_jpsro/oracle_g1.tsv --responders all
+JPSRO_GPU=0 \
+JPSRO_SELFPLAY_GPU=0 \
+JPSRO_SELFPLAY_WORKERS=4 \
+JPSRO_SELFPLAY_BATCH=64 \
+JPSRO_SELFPLAY_RATIO=0.7 \
+JPSRO_EVAL_THREADS=4 \
+JPSRO_PORT=10021 \
+tools/tictacmo-jpsro.sh \
+  runs/tictacmo_adaptive_jpsro_s0 \
+  tictacmo_jpsro.cfg
 ```
 
-Train a fresh AlphaZero oracle from the desired initialization with:
+This is a fresh run: no external Multiplayer AlphaZero checkpoint is loaded.
+Do not reuse a directory created by the old fixed `5,15,30` controller.
+
+`JPSRO_SELFPLAY_WORKERS=4` launches four worker processes.
+`JPSRO_SELFPLAY_BATCH=64` runs 64 actors concurrently inside each process, for
+up to 256 in-flight games on the selected GPU. Reduce the batch or worker count
+if a larger game exceeds GPU memory.
+
+## Controller parameters
+
+- `JPSRO_BOOTSTRAP_ITERATIONS` (default `5`): initial all-seat AlphaZero
+  iterations before `p0` is frozen.
+- `JPSRO_ORACLE_INTERVAL` (default `5`): iterations between candidate tests.
+- `JPSRO_TOTAL_ITERATIONS` (default `30`): fixed total training budget.
+- `JPSRO_GAMES_PER_ITERATION` (default `2000`): self-play games per iteration.
+- `JPSRO_TRAINING_STEPS` (default `500`): learner updates per iteration.
+- `JPSRO_LEARNER_BATCH` (default `1024`): learner minibatch size.
+- `JPSRO_SELFPLAY_WORKERS` (default `4`): parallel worker processes.
+- `JPSRO_SELFPLAY_BATCH` (default `64`): parallel actors per worker.
+- `JPSRO_SELFPLAY_RATIO` (default `0.7`): normal AlphaZero worker fraction.
+- `JPSRO_CPU_THREADS` (default `4`): CPU threads per self-play worker.
+- `JPSRO_EVAL_GAMES` (default `20`): games per evaluated payoff profile.
+- `JPSRO_EVAL_THREADS` (default `4`): parallel arena workers.
+- `JPSRO_EVAL_NOISE` (default `true`): stochastic evaluation games.
+- `JPSRO_SIMULATIONS` (default `50`): MCTS simulations in training and payoff
+  evaluation.
+- `JPSRO_ADMISSION_GAIN` (default `0.02`): minimum lower-bound gain.
+- `JPSRO_ADMISSION_CONFIDENCE` (default `2.0`): standard-error multiplier.
+- `JPSRO_TOLERANCE` (default `0.01`): empirical CCE-gap target.
+- `JPSRO_GPU`, `JPSRO_SELFPLAY_GPU`, `JPSRO_SEED`, `JPSRO_PORT`: device,
+  reproducibility, and server settings.
+
+## Outputs
+
+- `training/model/`: continuously trained single-network checkpoints.
+- `frozen/`: only accepted population checkpoints plus `p0`.
+- `admission_i*.json`: player-wise gains, errors, and admission decisions.
+- `meta/payoffs.json`: idempotently ingested empirical payoff statistics.
+- `meta/meta_strategy.json`: latest compact, certified CCE distribution.
+- `meta/meta_strategy_g0.json`, `meta/meta_strategy_i*.json`: preserved solver
+  generations.
+- `oracle_i*.tsv`: correlated opponent plans used by self-play workers.
+
+The latest checkpoint is the primary single-model result. The CCE population
+is a certified opponent curriculum and may also be deployed by sampling one
+whole joint profile per game.
+
+## Core MiniZero configuration
 
 ```ini
 zero_use_population=false
 zero_use_jpsro=true
-zero_jpsro_profile_file=/abs/path/runs/blokus10_jpsro/oracle_g1.tsv
+zero_jpsro_profile_file=/absolute/path/to/oracle.tsv
+zero_jpsro_selfplay_ratio=0.7
+zero_jpsro_num_workers=4
 ```
 
-Freeze and register its final checkpoint, then first evaluate only unilateral
-deviations:
-
-```bash
-python3 tools/jpsro.py add-policy runs/blokus10_jpsro p1 /abs/path/oracle_g1.pt --generation 1
-python3 tools/jpsro.py make-eval runs/blokus10_jpsro runs/blokus10_jpsro/deviation_g1/arena.json \
-  --candidate p1 --game blokus10 --conf-file /abs/path/blokus10.cfg \
-  --executable build/blokus10/minizero_blokus10 --games-per-profile 8 --noise
-# Run multiplayer-eval.py and ingest its games.jsonl as above.
-python3 tools/jpsro.py deviation-gap runs/blokus10_jpsro p1
-```
-
-If the frozen candidate has a meaningful positive gain, run `make-eval`
-without `--candidate` to fill the expanded payoff table, then solve again. If
-the gain is below the tolerance and uncertainty is small, stop. This two-stage
-evaluation avoids paying for the full cross product when an oracle did not
-improve.
-
-## Runtime, scaling, and deployment
-
-Oracle self-play still performs one MCTS search per move. Extra training time
-comes from loading at most (n-1) frozen models once per self-play worker and
-MiniZero iteration. Identical frozen artifacts used at several seats are
-deduplicated on each GPU. Frozen models keep stable GPU slots across lineup and
-seat changes, so an already resident model is not loaded again. Memory is
-approximately one current model plus the distinct frozen models in the
-selected profile, not the full population.
-
-`tools/quick-run.sh -b` controls self-play parallel games and therefore the
-neural-network inference batch. It is different from `learner_batch_size`,
-which only changes optimizer batches. The automatic experiment retains
-`-b 32 -c 4` so that the primary compute-matched comparison changes as few
-variables as possible. Increasing `-b` is an optional throughput experiment,
-not part of the primary result.
-
-Only one of (n) seats is trainable in each oracle game. This reduces usable
-replay positions per game to about (1/n), but it does not make each MCTS game
-(n) times slower. Matching the baseline's number of distinct trainable
-positions would require more games. For a clean from-scratch method comparison,
-keep the baseline and oracle compute budgets equal and explicitly report that
-the oracle receives fewer trainable positions; a separate data-matched run
-would require about (n) times as many games and answers a different question.
-
-The complete payoff table grows as (\prod_i|\Pi_i|), or (K^n) for a shared
-pool of size (K). Four-player generations with (K=2) and (K=3) need 16
-and 81 ordered profiles. Keep early populations small, use the unilateral test,
-split evaluation with `--max-profiles`, and stop based on gain and uncertainty.
-Pruning is faster, but then the certificate applies only to the retained game.
-
-`meta_strategy.json` contains the joint CCE distribution and each seat's
-marginal. Joint sampling preserves CCE correlation. Independently sampling the
-marginals is easier but generally loses the CCE guarantee. A single checkpoint
-can still be selected for ordinary competition, but its win rate is empirical,
-not guaranteed by CCE theory. Use the existing checkpoint self-eval and
-1v3/2v2/3v1 arenas to choose that deployment checkpoint.
+`zero_jpsro_replay_start_iteration` remains parseable only so old configuration
+files do not fail; the adaptive path intentionally ignores it.

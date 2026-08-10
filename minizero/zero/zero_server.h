@@ -17,6 +17,7 @@
 namespace minizero::zero {
 
 std::vector<float> calculatePopulationSeatBaseWeights(int min_seats, int max_seats, bool balance_seats);
+int calculateJPSROPlainCount(int total, float selfplay_ratio);
 
 struct JPSROProfile {
     float weight;

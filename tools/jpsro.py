@@ -18,6 +18,7 @@ solve_cce = _meta_solver.solve_cce
 JPSROState = _state.JPSROState
 atomic_json = _workflow.atomic_json
 candidate_deviation_gains = _workflow.candidate_deviation_gains
+admit_candidate = _workflow.admit_candidate
 create_evaluation_manifest = _workflow.create_evaluation_manifest
 ingest_evaluation = _workflow.ingest_evaluation
 required_deviation_profiles = _workflow.required_deviation_profiles
@@ -109,6 +110,15 @@ def command_deviation_gap(args):
     }, indent=2))
 
 
+def command_admit_candidate(args):
+    state = JPSROState.load(args.run_dir)
+    result = admit_candidate(
+        state, args.candidate, args.min_gain, args.confidence)
+    if args.output:
+        atomic_json(args.output, result)
+    print(json.dumps(result, indent=2))
+
+
 def command_status(args):
     state = JPSROState.load(args.run_dir)
     policy_sets = state.policy_sets()
@@ -189,6 +199,17 @@ def build_parser():
     item.add_argument("run_dir")
     item.add_argument("candidate")
     item.set_defaults(func=command_deviation_gap)
+
+    item = subparsers.add_parser(
+        "admit-candidate",
+        help="retain a candidate only for players with a significant deviation gain",
+    )
+    item.add_argument("run_dir")
+    item.add_argument("candidate")
+    item.add_argument("--min-gain", type=float, default=0.02)
+    item.add_argument("--confidence", type=float, default=2.0)
+    item.add_argument("--output")
+    item.set_defaults(func=command_admit_candidate)
 
     item = subparsers.add_parser("status", help="summarize a JPSRO run")
     item.add_argument("run_dir")

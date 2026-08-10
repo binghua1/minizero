@@ -31,6 +31,17 @@ std::vector<float> calculatePopulationSeatBaseWeights(int min_seats, int max_sea
     return weights;
 }
 
+int calculateJPSROPlainCount(int total, float selfplay_ratio)
+{
+    if (total <= 0) { return 0; }
+    const float ratio = std::clamp(selfplay_ratio, 0.0f, 1.0f);
+    int count = static_cast<int>(std::lround(ratio * total));
+    if (total > 1 && ratio > 0.0f && ratio < 1.0f) {
+        count = std::clamp(count, 1, total - 1);
+    }
+    return std::clamp(count, 0, total);
+}
+
 std::vector<JPSROProfile> loadJPSROProfiles(const std::string& path)
 {
     std::ifstream stream(path);
@@ -296,6 +307,10 @@ void ZeroServer::initialize()
             throw std::runtime_error("zero_use_jpsro and zero_use_population are mutually exclusive");
         }
         jpsro_profiles_ = loadJPSROProfiles(config::zero_jpsro_profile_file);
+        if (config::zero_jpsro_selfplay_ratio < 0.0f || config::zero_jpsro_selfplay_ratio > 1.0f ||
+            config::zero_jpsro_num_workers <= 0) {
+            throw std::runtime_error("invalid hybrid JPSRO worker configuration");
+        }
         shared_data_.logger_.addTrainingLog("[JPSRO Profiles] Loaded " + std::to_string(jpsro_profiles_.size()));
     }
 }
@@ -311,6 +326,12 @@ void ZeroServer::selfPlay()
     std::vector<int> game_lengths;
     std::vector<float> game_returns;
     std::vector<std::vector<float>> game_player_returns;
+    const int target_plain_games = config::zero_use_jpsro
+                                       ? calculateJPSROPlainCount(config::zero_num_games_per_iteration,
+                                                                  config::zero_jpsro_selfplay_ratio)
+                                       : config::zero_num_games_per_iteration;
+    int plain_games = 0;
+    int opponent_games = 0;
     int num_collect_game = 0, total_data_length = 0;
     while (num_collect_game < config::zero_num_games_per_iteration) {
         broadcastSelfPlayJob();
@@ -323,6 +344,15 @@ void ZeroServer::selfPlay()
         } else if (!config::zero_server_accept_different_model_games && sp_data.game_record_.find("weight_iter_" + std::to_string(shared_data_.getModelIetration())) == std::string::npos) {
             // discard previous self-play games
             continue;
+        }
+        if (config::zero_use_jpsro) {
+            const bool opponent_game = sp_data.game_record_.find("JI[") != std::string::npos;
+            const int target_opponent_games = config::zero_num_games_per_iteration - target_plain_games;
+            if ((!opponent_game && plain_games >= target_plain_games) ||
+                (opponent_game && opponent_games >= target_opponent_games)) {
+                continue;
+            }
+            opponent_game ? ++opponent_games : ++plain_games;
         }
 
         // save record
@@ -377,6 +407,11 @@ void ZeroServer::selfPlay()
                 " return=" + std::to_string(item.second.first / item.second.second));
         }
     }
+    if (config::zero_use_jpsro) {
+        shared_data_.logger_.addTrainingLog(
+            "[JPSRO Game Mix] selfplay=" + std::to_string(plain_games) +
+            " opponent=" + std::to_string(opponent_games));
+    }
     if (!game_lengths.empty()) {
         shared_data_.logger_.addTrainingLog("[SelfPlay # Finished Games] " + std::to_string(game_lengths.size()));
         shared_data_.logger_.addTrainingLog("[SelfPlay Min. Game Lengths] " + std::to_string(*std::min_element(game_lengths.begin(), game_lengths.end())));
@@ -415,12 +450,31 @@ void ZeroServer::broadcastSelfPlayJob()
 {
     const std::vector<int> population_iterations = config::zero_use_jpsro ? std::vector<int>{} : getPopulationIterations();
     boost::lock_guard<boost::mutex> lock(worker_mutex_);
-    size_t self_play_worker_index = 0;
+    std::vector<boost::shared_ptr<ZeroWorkerHandler>> idle_workers;
     for (auto& worker : connections_) {
-        if (!worker->isIdle() || worker->getType() != "sp") { continue; }
+        if (worker->isIdle() && worker->getType() == "sp") { idle_workers.push_back(worker); }
+    }
+    if (config::zero_use_jpsro &&
+        static_cast<int>(idle_workers.size()) < config::zero_jpsro_num_workers) {
+        return;
+    }
+    const int num_plain_selfplay = config::zero_use_jpsro
+                                       ? calculateJPSROPlainCount(idle_workers.size(), config::zero_jpsro_selfplay_ratio)
+                                       : 0;
+    if (config::zero_use_jpsro && !idle_workers.empty()) {
+        shared_data_.logger_.addTrainingLog(
+            "[JPSRO Worker Mix] selfplay=" + std::to_string(num_plain_selfplay) +
+            " opponent=" + std::to_string(idle_workers.size() - num_plain_selfplay));
+    }
+    size_t self_play_worker_index = 0;
+    for (auto& worker : idle_workers) {
         worker->setIdle(false);
         worker->write("load_model " + config::zero_training_directory + "/model/weight_iter_" + std::to_string(shared_data_.getModelIetration()) + ".pt");
-        if (config::zero_use_jpsro) {
+        const bool plain_selfplay = config::zero_use_jpsro &&
+                                    static_cast<int>((self_play_worker_index + iteration_) % idle_workers.size()) < num_plain_selfplay;
+        if (plain_selfplay) {
+            worker->write("clear_population");
+        } else if (config::zero_use_jpsro) {
             const float total_weight = std::accumulate(
                 jpsro_profiles_.begin(), jpsro_profiles_.end(), 0.0f,
                 [](float total, const JPSROProfile& profile) { return total + profile.weight; });
@@ -543,9 +597,6 @@ void ZeroServer::optimization()
     std::string job_command = "train ";
     job_command += "weight_iter_" + std::to_string(shared_data_.getModelIetration()) + ".pkl";
     int replay_start = std::max(1, iteration_ - config::zero_replay_buffer + 1);
-    if (config::zero_use_jpsro) {
-        replay_start = std::max(replay_start, config::zero_jpsro_replay_start_iteration);
-    }
     job_command += " " + std::to_string(replay_start);
     job_command += " " + std::to_string(iteration_);
 

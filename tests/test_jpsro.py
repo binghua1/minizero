@@ -7,7 +7,7 @@ from pathlib import Path
 from minizero.jpsro.meta_solver import cce_gap, solve_cce
 from minizero.jpsro.state import JPSROState, PayoffTable
 from minizero.jpsro.workflow import (
-    candidate_deviation_gains, create_evaluation_manifest, create_oracle_profiles, ingest_evaluation,
+    admit_candidate, candidate_deviation_gains, create_evaluation_manifest, create_oracle_profiles, ingest_evaluation,
     write_oracle_plan,
 )
 
@@ -46,6 +46,16 @@ class JPSROTest(unittest.TestCase):
         for profile, probability in result["distribution"].items():
             marginal[profile[0]] += probability
         self.assertAlmostEqual(marginal[0], 0.5, delta=0.08)
+
+    def test_cce_output_compacts_to_certified_pure_support(self):
+        policies = [["good", "bad"], ["good", "bad"]]
+        payoffs = {
+            (0, 0): (1.0, 1.0), (0, 1): (1.0, -1.0),
+            (1, 0): (-1.0, 1.0), (1, 1): (-1.0, -1.0),
+        }
+        result = solve_cce(policies, payoffs, iterations=5000, tolerance=0.01)
+        self.assertEqual(result["support_size"], 1)
+        self.assertLessEqual(result["gap"], 0.01)
 
     def test_shared_pool_oracle_rotates_one_responder(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -98,6 +108,11 @@ class JPSROTest(unittest.TestCase):
                 state.payoffs.add(("p0", "p1"), (-0.5, 0.5))
             gains = candidate_deviation_gains(state, "p1")
             self.assertEqual([item["gain"] for item in gains], [0.25, 0.5])
+
+            decision = admit_candidate(state, "p1", min_gain=0.3, confidence=0.0)
+            self.assertTrue(decision["accepted"])
+            self.assertEqual(decision["eligible_players"], [1])
+            self.assertEqual(state.policy_sets(), [["p0"], ["p0", "p1"]])
 
 
 if __name__ == "__main__":
