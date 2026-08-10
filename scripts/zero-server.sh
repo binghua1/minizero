@@ -23,12 +23,13 @@ usage()
 	echo "             --sp_executable_file   Assign the path for self-play executable file"
 	echo "             --op_executable_file   Assign the path for optimization executable file"
 	echo "             --link_sgf             Assign the path of sgf for training without self play (only op)"
+	echo "             --continue             Resume an existing training directory without prompts"
 	echo "  -conf_str                         Overwrite settings in the configure file"
 	exit 1
 }
 
 # check argument
-if [ $# -lt 3 ] || [ $(($# % 2)) -eq 0 ]; then
+if [ $# -lt 3 ]; then
 	usage
 else
 	game_type=$1; shift
@@ -44,6 +45,7 @@ sp_executable_file=build/${game_type}/minizero_${game_type}
 op_executable_file=minizero/learner/train.py
 overwrite_conf_str=""
 link_sgf=""
+continue_training=false
 while :; do
 	case $1 in
 		-h|--help) shift; usage
@@ -61,6 +63,8 @@ while :; do
 		--op_executable_file) shift; op_executable_file=$1
 		;;
 		--link_sgf) shift; link_sgf=$1
+		;;
+		--continue) continue_training=true
 		;;
 		-conf_str) shift; overwrite_conf_str=$1
 		;;
@@ -88,8 +92,12 @@ fi
 
 run_stage="R"
 if [ -d ${train_dir} ]; then
-	read -n1 -p "${train_dir} has existed. (R)estart / (C)ontinue / (Q)uit? " run_stage
-	echo ""
+	if [ "${continue_training}" = true ]; then
+		run_stage=C
+	else
+		read -n1 -p "${train_dir} has existed. (R)estart / (C)ontinue / (Q)uit? " run_stage
+		echo ""
+	fi
 fi
 
 zero_start_iteration=1
@@ -120,9 +128,11 @@ elif [[ ${run_stage,} == "c" ]]; then
 	echo y | ${sp_executable_file} -gen ${train_dir}/${new_configure_file} -conf_file ${train_dir}/${new_configure_file} -conf_str "${overwrite_conf_str}" 2>/dev/null
 
 	# friendly notification if continuing training
-	read -n1 -p "Continue training from iteration: ${zero_start_iteration}, model file: ${model_file}, configuration: ${train_dir}/${new_configure_file}. Sure? (y/n) " yn
-	[[ ${yn,,} == "y" ]] || exit
-	echo ""
+	if [ "${continue_training}" != true ]; then
+		read -n1 -p "Continue training from iteration: ${zero_start_iteration}, model file: ${model_file}, configuration: ${train_dir}/${new_configure_file}. Sure? (y/n) " yn
+		[[ ${yn,,} == "y" ]] || exit
+		echo ""
+	fi
 else
 	exit
 fi

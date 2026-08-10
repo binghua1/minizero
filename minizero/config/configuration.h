@@ -62,6 +62,7 @@ extern int zero_population_current_seat_max;
 extern bool zero_population_balance_seats;
 extern bool zero_use_jpsro;
 extern std::string zero_jpsro_profile_file;
+extern int zero_jpsro_replay_start_iteration;
 
 // learner parameters
 extern bool learner_use_per;
