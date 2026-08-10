@@ -113,6 +113,7 @@ JPSRO_SELFPLAY_GPU=0 \
 JPSRO_SELFPLAY_WORKERS=4 \
 JPSRO_SELFPLAY_BATCH=64 \
 JPSRO_SELFPLAY_RATIO=0.7 \
+JPSRO_EVAL_BATCH=64 \
 JPSRO_EVAL_THREADS=4 \
 JPSRO_PORT=10021 \
 tools/tictacmo-jpsro.sh \
@@ -128,6 +129,15 @@ Do not reuse a directory created by the old fixed `5,15,30` controller.
 up to 256 in-flight games on the selected GPU. Reduce the batch or worker count
 if a larger game exceeds GPU memory.
 
+Payoff evaluation also uses `ActorGroup`, but in an isolated evaluation-only
+process that never connects to the training server or writes replay data. All
+repeats of one ordered joint profile share loaded frozen networks and are
+evaluated in batches of up to `JPSRO_EVAL_BATCH` games. Profiles are processed
+sequentially so one GPU is not filled with several duplicate model sets. This
+changes only execution efficiency: game counts, empirical payoffs, candidate
+admission, and the CCE certificate are unchanged. Manifests made by the older
+controller automatically fall back to the console arena when resumed.
+
 ## Controller parameters
 
 - `JPSRO_BOOTSTRAP_ITERATIONS` (default `5`): initial all-seat AlphaZero
@@ -142,15 +152,18 @@ if a larger game exceeds GPU memory.
 - `JPSRO_SELFPLAY_RATIO` (default `0.7`): normal AlphaZero worker fraction.
 - `JPSRO_CPU_THREADS` (default `4`): CPU threads per self-play worker.
 - `JPSRO_EVAL_GAMES` (default `20`): games per evaluated payoff profile.
-- `JPSRO_EVAL_THREADS` (default `4`): parallel arena workers.
+- `JPSRO_EVAL_BATCH` (default `64`): parallel games sharing one frozen joint
+  profile and batched GPU inference.
+- `JPSRO_EVAL_THREADS` (default `4`): CPU threads supporting batched payoff
+  search; it no longer means four isolated console games for new manifests.
 - `JPSRO_EVAL_NOISE` (default `true`): stochastic evaluation games.
 - `JPSRO_SIMULATIONS` (default `50`): MCTS simulations in training and payoff
   evaluation.
 - `JPSRO_ADMISSION_GAIN` (default `0.02`): minimum lower-bound gain.
 - `JPSRO_ADMISSION_CONFIDENCE` (default `2.0`): standard-error multiplier.
 - `JPSRO_TOLERANCE` (default `0.01`): empirical CCE-gap target.
-- `JPSRO_GPU`, `JPSRO_SELFPLAY_GPU`, `JPSRO_SEED`, `JPSRO_PORT`: device,
-  reproducibility, and server settings.
+- `JPSRO_GPU`, `JPSRO_SELFPLAY_GPU`, `JPSRO_EVAL_GPU`, `JPSRO_SEED`,
+  `JPSRO_PORT`: device, reproducibility, and server settings.
 
 ## Outputs
 

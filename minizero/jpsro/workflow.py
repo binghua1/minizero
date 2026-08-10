@@ -39,6 +39,7 @@ def create_evaluation_manifest(state, profiles, game, config_path,
         conf_str = ":".join(f"{key}={value}" for key, value in overrides.items())
         agents.append({
             "name": policy_id,
+            "model_path": state.model_path(policy_id),
             "cwd": repo_root,
             "command": [executable, "-mode", "console", "-conf_file", config_path,
                         "-conf_str", conf_str],
@@ -57,6 +58,14 @@ def create_evaluation_manifest(state, profiles, game, config_path,
         "pass_mode": "elimination" if game.startswith("blokus") else "terminal",
         "command_timeout": float(command_timeout),
         "seed": int(seed),
+        "batched_evaluation": {
+            "executable": executable,
+            "config_file": config_path,
+            "cwd": repo_root,
+            "num_simulations": simulations,
+            "search_type": search_type,
+            "noise": bool(noise),
+        },
     }
 
 
