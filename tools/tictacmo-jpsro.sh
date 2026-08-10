@@ -9,12 +9,14 @@ usage() {
     cat <<'EOF'
 Usage:
   tools/tictacmo-jpsro.sh baseline RUN_DIR CONFIG.cfg
+  tools/tictacmo-jpsro.sh reuse    RUN_DIR EXISTING_TRAIN_DIR CONFIG.cfg
   tools/tictacmo-jpsro.sh oracle   RUN_DIR
   tools/tictacmo-jpsro.sh evaluate RUN_DIR
   tools/tictacmo-jpsro.sh all      RUN_DIR CONFIG.cfg
 
-Both p0 and p1 start from the same seeded random initialization and use the
-same compute budget. Override defaults with JPSRO_* environment variables.
+The baseline/all path gives p0 and p1 the same seeded random initialization.
+The reuse path keeps an existing p0 and only trains p1 from scratch.
+Override defaults with JPSRO_* environment variables.
 EOF
 }
 
@@ -57,6 +59,22 @@ train_baseline() {
         "$common_conf:zero_use_jpsro=false"
 }
 
+reuse_baseline() {
+    local training_dir=$1
+    local source_config=$2
+    [[ -d "$training_dir/model" ]] || die "model directory not found: $training_dir/model"
+    [[ -f "$source_config" ]] || die "config not found: $source_config"
+    [[ ! -e "$config" && ! -e "$run_dir/frozen" ]] || die "$run_dir was already prepared"
+    mkdir -p "$run_dir/frozen"
+    training_dir=$(readlink -f "$training_dir")
+    source_config=$(readlink -f "$source_config")
+    cp "$source_config" "$config"
+    cp "$(model_at_iteration "$training_dir" "$mid_iteration")" \
+        "$run_dir/frozen/base_mid.pt"
+    cp "$(latest_model "$training_dir")" "$run_dir/frozen/base_final.pt"
+    echo "reused baseline checkpoints from $training_dir"
+}
+
 train_oracle() {
     [[ -f "$config" ]] || die "run baseline first; missing $config"
     [[ ! -e "$meta_dir" ]] || die "$meta_dir already exists; oracle stage was already started"
@@ -64,9 +82,11 @@ train_oracle() {
     [[ -x "$executable" ]] || die "missing executable: $executable"
 
     mkdir -p "$run_dir/frozen" "$run_dir/eval_g0"
-    cp "$(model_at_iteration "$run_dir/baseline_p0" "$mid_iteration")" \
-        "$run_dir/frozen/base_mid.pt"
-    cp "$(latest_model "$run_dir/baseline_p0")" "$run_dir/frozen/base_final.pt"
+    if [[ ! -f "$run_dir/frozen/base_mid.pt" || ! -f "$run_dir/frozen/base_final.pt" ]]; then
+        cp "$(model_at_iteration "$run_dir/baseline_p0" "$mid_iteration")" \
+            "$run_dir/frozen/base_mid.pt"
+        cp "$(latest_model "$run_dir/baseline_p0")" "$run_dir/frozen/base_final.pt"
+    fi
 
     python3 tools/jpsro.py init "$meta_dir" --players 3 --shared-pool
     python3 tools/jpsro.py add-policy "$meta_dir" b0 "$run_dir/frozen/base_mid.pt" --generation 0
@@ -127,13 +147,13 @@ esac
 [[ "$run_dir" != *[,:[:space:]]* ]] || die "RUN_DIR cannot contain spaces, commas, or colons"
 
 gpu=${JPSRO_GPU:-0}
-iterations=${JPSRO_ITERATIONS:-10}
+iterations=${JPSRO_ITERATIONS:-30}
 mid_iteration=${JPSRO_BASELINE_MID_ITERATION:-$((iterations / 2))}
 games=${JPSRO_GAMES_PER_ITERATION:-2000}
-training_steps=${JPSRO_TRAINING_STEPS:-250}
+training_steps=${JPSRO_TRAINING_STEPS:-500}
 learner_batch=${JPSRO_LEARNER_BATCH:-1024}
-selfplay_batch=${JPSRO_SELFPLAY_BATCH:-96}
-cpu_threads=${JPSRO_CPU_THREADS:-12}
+selfplay_batch=${JPSRO_SELFPLAY_BATCH:-32}
+cpu_threads=${JPSRO_CPU_THREADS:-4}
 eval_games=${JPSRO_EVAL_GAMES:-8}
 eval_threads=${JPSRO_EVAL_THREADS:-2}
 simulations=${JPSRO_SIMULATIONS:-50}
@@ -149,6 +169,10 @@ case "$stage" in
     baseline)
         [[ $# -eq 3 ]] || die "baseline requires CONFIG.cfg"
         train_baseline "$3"
+        ;;
+    reuse)
+        [[ $# -eq 4 ]] || die "reuse requires EXISTING_TRAIN_DIR and CONFIG.cfg"
+        reuse_baseline "$3" "$4"
         ;;
     oracle)
         [[ $# -eq 2 ]] || die "oracle only needs RUN_DIR"
