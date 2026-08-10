@@ -7,13 +7,16 @@ cd "$repo_root"
 
 usage() {
     cat <<'EOF'
-Usage: tools/tictacmo-jpsro.sh RUN_DIR CONFIG.cfg
+Usage:
+  tools/tictacmo-jpsro.sh RUN_DIR CONFIG.cfg
+  tools/multiplayer-jpsro.sh GAME RUN_DIR CONFIG.cfg
 
 Train one from-scratch Adaptive JPSRO-guided AlphaZero run. Normal all-seat
 self-play preserves AlphaZero data efficiency; the remaining workers train
 against CCE-selected joint opponents. Candidates are tested every oracle
 interval and enter only the player pools where their lower-confidence gain is
-positive. Re-running the same command resumes an interrupted run.
+positive. GAME currently supports tictacmo and connect3x3. Re-running the same
+command resumes an interrupted run.
 EOF
 }
 
@@ -53,7 +56,7 @@ train_to() {
     if [[ -n "$profile_file" ]]; then
         conf="$common_conf:zero_use_jpsro=true:zero_jpsro_profile_file=$profile_file"
     fi
-    local args=(tools/quick-run.sh train tictacmo "$config" "$end_iteration"
+    local args=(tools/quick-run.sh train "$game" "$config" "$end_iteration"
                 -n "$training_dir" -g "$gpu" -p "$port"
                 -b "$selfplay_batch" -c "$cpu_threads" -conf_str "$conf")
     [[ "$sp_gpu" != "$gpu" ]] && args+=(--sp_gpu "$sp_gpu")
@@ -68,7 +71,7 @@ evaluate_profiles() {
     mkdir -p "$output_dir"
     if [[ ! -f "$manifest" ]]; then
         local args=(python3 tools/jpsro.py make-eval "$meta_dir" "$manifest"
-                    --game tictacmo --conf-file "$config" --executable "$executable"
+                    --game "$game" --conf-file "$config" --executable "$executable"
                     --games-per-profile "$eval_games" --min-games "$eval_games"
                     --num-simulations "$simulations")
         [[ -n "$candidate" ]] && args+=(--candidate "$candidate")
@@ -104,7 +107,16 @@ solve_meta() {
     cp "$meta_dir/meta_strategy.json" "$meta_dir/meta_strategy_${label}.json"
 }
 
-[[ $# -eq 2 ]] || { usage; exit 2; }
+if [[ $# -eq 2 ]]; then
+    game=tictacmo
+elif [[ $# -eq 3 ]]; then
+    game=${1,,}
+    shift
+else
+    usage
+    exit 2
+fi
+[[ "$game" == tictacmo || "$game" == connect3x3 ]] || die "GAME must be tictacmo or connect3x3"
 run_dir=$(readlink -m "$1")
 source_config=$(readlink -f "$2")
 [[ -f "$source_config" ]] || die "config not found: $2"
@@ -148,19 +160,22 @@ eval_gpu=${JPSRO_EVAL_GPU:-$gpu}
 sp_gpu=""
 for ((worker = 0; worker < selfplay_workers; ++worker)); do sp_gpu+="$worker_gpu"; done
 
-config="$run_dir/tictacmo.cfg"
+config="$run_dir/$game.cfg"
 training_dir="$run_dir/training"
 meta_dir="$run_dir/meta"
 frozen_dir="$run_dir/frozen"
-executable="$repo_root/build/tictacmo/minizero_tictacmo"
+executable="$repo_root/build/$game/minizero_$game"
 settings_file="$run_dir/adaptive_jpsro.settings"
-settings="version=2 bootstrap=$bootstrap_iterations interval=$oracle_interval total=$total_iterations games=$games steps=$training_steps learner_batch=$learner_batch selfplay_workers=$selfplay_workers selfplay_batch=$selfplay_batch selfplay_ratio=$selfplay_ratio cpu_threads=$cpu_threads eval_games=$eval_games eval_noise=$eval_noise simulations=$simulations seed=$seed admission_gain=$admission_gain admission_confidence=$admission_confidence"
+legacy_settings="version=2 bootstrap=$bootstrap_iterations interval=$oracle_interval total=$total_iterations games=$games steps=$training_steps learner_batch=$learner_batch selfplay_workers=$selfplay_workers selfplay_batch=$selfplay_batch selfplay_ratio=$selfplay_ratio cpu_threads=$cpu_threads eval_games=$eval_games eval_noise=$eval_noise simulations=$simulations seed=$seed admission_gain=$admission_gain admission_confidence=$admission_confidence"
+settings="game=$game $legacy_settings"
 common_conf="zero_use_population=false:zero_jpsro_selfplay_ratio=$selfplay_ratio:zero_jpsro_num_workers=$selfplay_workers:zero_disable_resign_ratio=1:zero_num_games_per_iteration=$games:learner_training_step=$training_steps:learner_batch_size=$learner_batch:actor_num_simulation=$simulations:program_auto_seed=false:program_seed=$seed"
 
 mkdir -p "$run_dir" "$frozen_dir"
 [[ ! -f "$run_dir/budgeted_jpsro.settings" ]] || die "old fixed-JPSRO run detected; use a new RUN_DIR for the adaptive method"
 if [[ -f "$settings_file" ]]; then
-    [[ "$(<"$settings_file")" == "$settings" ]] || die "resume settings differ from $settings_file"
+    saved_settings=$(<"$settings_file")
+    [[ "$saved_settings" == "$settings" || ( "$game" == tictacmo && "$saved_settings" == "$legacy_settings" ) ]] || \
+        die "resume settings differ from $settings_file"
 else
     echo "$settings" > "$settings_file"
 fi
