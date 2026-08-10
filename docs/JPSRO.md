@@ -57,8 +57,13 @@ JPSRO_BOUNDARIES=50,100,150,200,250,300 \
 Other overrides are `JPSRO_GAMES_PER_ITERATION`, `JPSRO_TRAINING_STEPS`,
 `JPSRO_LEARNER_BATCH`, `JPSRO_SELFPLAY_BATCH`, `JPSRO_CPU_THREADS`,
 `JPSRO_EVAL_GAMES`, `JPSRO_EVAL_THREADS`, `JPSRO_EVAL_NOISE`,
-`JPSRO_SIMULATIONS`, `JPSRO_GPU`, `JPSRO_SEED`, `JPSRO_PORT`, and
+`JPSRO_SIMULATIONS`, `JPSRO_GPU`, `JPSRO_SP_GPU`, `JPSRO_SEED`, `JPSRO_PORT`, and
 `JPSRO_TOLERANCE`.
+
+`JPSRO_GPU=0 JPSRO_SP_GPU=0000` keeps the learner on GPU 0 while launching four
+self-play worker processes on that same GPU. Each worker uses
+`JPSRO_SELFPLAY_BATCH` parallel games, so this setting multiplies both
+self-play concurrency and worker model memory by four.
 
 `training/model/` contains the continuously warm-started learner checkpoints;
 `frozen/p*.pt` are immutable population members. The latest checkpoint is the

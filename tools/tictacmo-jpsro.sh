@@ -55,6 +55,7 @@ train_to() {
     local args=(tools/quick-run.sh train tictacmo "$config" "$end_iteration"
                 -n "$training_dir" -g "$gpu" -p "$port"
                 -b "$selfplay_batch" -c "$cpu_threads" -conf_str "$conf")
+    [[ "$sp_gpu" != "$gpu" ]] && args+=(--sp_gpu "$sp_gpu")
     [[ -d "$training_dir" ]] && args+=(--continue-training)
     "${args[@]}"
 }
@@ -116,6 +117,7 @@ for boundary in "${boundaries[@]}"; do
 done
 
 gpu=${JPSRO_GPU:-0}
+sp_gpu=${JPSRO_SP_GPU:-$gpu}
 games=${JPSRO_GAMES_PER_ITERATION:-2000}
 training_steps=${JPSRO_TRAINING_STEPS:-500}
 learner_batch=${JPSRO_LEARNER_BATCH:-1024}
