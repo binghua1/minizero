@@ -1,0 +1,183 @@
+"""JPSRO orchestration helpers shared by the command-line tool and tests."""
+
+import itertools
+import json
+import sys
+from pathlib import Path
+
+
+PLAYER_CODES = ("b", "w", "r", "g", "y", "p")
+DEFAULT_MAX_MOVES = {"blokus": 400, "blokus10": 160, "blokus15": 220}
+
+
+def create_evaluation_manifest(state, profiles, game, config_path,
+                               executable, repo_root, games_per_profile=1,
+                               simulations=None, search_type="maxn", noise=False,
+                               seed=0, command_timeout=300):
+    """Create a fixed-seat arena manifest for ordered empirical profiles."""
+    config_path = str(Path(config_path).resolve())
+    executable = str(Path(executable).resolve())
+    repo_root = str(Path(repo_root).resolve())
+    used = list(dict.fromkeys(policy for profile in profiles for policy in profile))
+    agents = []
+    for policy_id in used:
+        overrides = {
+            "nn_file_name": state.model_path(policy_id),
+            "actor_multiplayer_search_type": search_type,
+            "actor_use_dirichlet_noise": str(bool(noise)).lower(),
+            "actor_use_gumbel": "false",
+            "actor_use_gumbel_noise": "false",
+            "actor_use_random_rotation_features": str(bool(noise)).lower(),
+            "actor_select_action_by_count": "true",
+            "actor_select_action_by_softmax_count": "false",
+            "zero_disable_resign_ratio": "1",
+            "program_auto_seed": "false",
+            "program_seed": "{seed}",
+        }
+        if simulations is not None:
+            overrides["actor_num_simulation"] = str(simulations)
+        conf_str = ":".join(f"{key}={value}" for key, value in overrides.items())
+        agents.append({
+            "name": policy_id,
+            "cwd": repo_root,
+            "command": [executable, "-mode", "console", "-conf_file", config_path,
+                        "-conf_str", conf_str],
+        })
+    return {
+        "game": game,
+        "players": list(PLAYER_CODES[:state.num_players]),
+        "agents": agents,
+        "lineups": [list(profile) for profile in profiles],
+        "jpsro_profiles": [list(profile) for profile in profiles],
+        "seat_mode": "fixed",
+        "games_per_seating": int(games_per_profile),
+        "max_moves": DEFAULT_MAX_MOVES.get(game, 2048),
+        "terminal_passes": state.num_players if game.startswith("blokus") else 1,
+        "pass_mode": "elimination" if game.startswith("blokus") else "terminal",
+        "command_timeout": float(command_timeout),
+        "seed": int(seed),
+    }
+
+
+def ingest_evaluation(state, manifest_path, games_path):
+    manifest_path = Path(manifest_path).resolve()
+    manifest = json.loads(manifest_path.read_text())
+    profiles = manifest.get("jpsro_profiles", manifest.get("lineups", []))
+    accepted = 0
+    errors = 0
+    with Path(games_path).open() as stream:
+        for line in stream:
+            if not line.strip():
+                continue
+            game = json.loads(line)
+            if game.get("error") or not game.get("returns"):
+                errors += 1
+                continue
+            lineup_id = int(game["lineup_id"])
+            if lineup_id < 0 or lineup_id >= len(profiles):
+                raise ValueError(f"invalid lineup_id {lineup_id}")
+            profile = tuple(profiles[lineup_id])
+            # A fixed-seat JPSRO manifest preserves ordered profile semantics.
+            if list(game.get("seating", [])) != list(profile):
+                raise ValueError("JPSRO payoff ingestion requires seat_mode=fixed")
+            sample_id = f"{manifest_path}:{int(game['game_id'])}"
+            accepted += int(state.payoffs.add(profile, game["returns"], sample_id))
+    state.save()
+    return accepted, errors
+
+
+def create_oracle_profiles(state, responders=None, response_id="CURRENT"):
+    """Marginalize the CCE recommendation at one responder seat at a time."""
+    meta = state.load_meta_strategy()
+    if responders is None:
+        responders = list(range(state.num_players))
+    responders = [int(player) for player in responders]
+    aggregate = {}
+    for item in meta["distribution"]:
+        probability = float(item["probability"])
+        for responder in responders:
+            profile = list(item["profile"])
+            profile[responder] = response_id
+            mask = tuple(player == responder for player in range(state.num_players))
+            key = (tuple(profile), mask)
+            aggregate[key] = aggregate.get(key, 0.0) + probability / len(responders)
+    return [(weight, profile, mask) for (profile, mask), weight in aggregate.items()
+            if weight >= 1e-12]
+
+
+def write_oracle_plan(state, output_path, responders=None, response_id="CURRENT"):
+    """Write the compact TSV consumed by ZeroServer's JPSRO profile loader."""
+    rows = create_oracle_profiles(state, responders, response_id)
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    lines = ["# weight\tprofile_id\tpolicy_ids\ttrainable_mask\tmodel_paths"]
+    for index, (weight, profile, mask) in enumerate(rows):
+        paths = ["CURRENT" if trainable else state.model_path(policy_id)
+                 for policy_id, trainable in zip(profile, mask)]
+        lines.append("\t".join([
+            f"{weight:.17g}", f"oracle_{index}", ",".join(profile),
+            ",".join("1" if value else "0" for value in mask), ",".join(paths),
+        ]))
+    temporary = output_path.with_suffix(output_path.suffix + ".tmp")
+    temporary.write_text("\n".join(lines) + "\n")
+    temporary.replace(output_path)
+    return len(rows)
+
+
+def meta_profile_probabilities(meta):
+    return {tuple(item["profile"]): float(item["probability"])
+            for item in meta["distribution"]}
+
+
+def required_deviation_profiles(state, candidate_id):
+    """Profiles needed to measure every player's gain from a new policy."""
+    meta = state.load_meta_strategy()
+    result = set()
+    for item in meta["distribution"]:
+        for player in range(state.num_players):
+            profile = list(item["profile"])
+            profile[player] = candidate_id
+            result.add(tuple(profile))
+    return sorted(result)
+
+
+def candidate_deviation_gains(state, candidate_id):
+    """Estimate unilateral gain of a frozen oracle against the previous CCE."""
+    meta = state.load_meta_strategy()
+    result = []
+    for player in range(state.num_players):
+        gain = 0.0
+        variance = 0.0
+        games = 0
+        for item in meta["distribution"]:
+            probability = float(item["probability"])
+            baseline = tuple(item["profile"])
+            deviated = list(baseline)
+            deviated[player] = candidate_id
+            deviated = tuple(deviated)
+            baseline_entry = state.payoffs.get(baseline)
+            deviation_entry = state.payoffs.get(deviated)
+            if not baseline_entry or not deviation_entry:
+                raise ValueError(f"missing candidate payoff for player {player}: {deviated}")
+            gain += probability * (
+                deviation_entry["mean"][player] - baseline_entry["mean"][player]
+            )
+            base_error = state.payoffs.stderr(baseline)[player]
+            dev_error = state.payoffs.stderr(deviated)[player]
+            variance += probability * probability * (base_error * base_error + dev_error * dev_error)
+            games += deviation_entry["count"]
+        result.append({
+            "player": player,
+            "gain": gain,
+            "standard_error": variance ** 0.5,
+            "candidate_games": games,
+        })
+    return result
+
+
+def atomic_json(path, value):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
+    temporary.replace(path)

@@ -3,6 +3,8 @@
 #include "zero_server.h"
 #include <cassert>
 #include <cmath>
+#include <filesystem>
+#include <fstream>
 #include <vector>
 
 int main()
@@ -45,6 +47,19 @@ int main()
     assert(std::abs(balanced_seats[0] - 6.0f / 11.0f) < 1e-6f);
     assert(std::abs(balanced_seats[1] - 3.0f / 11.0f) < 1e-6f);
     assert(std::abs(balanced_seats[2] - 2.0f / 11.0f) < 1e-6f);
+
+    const std::filesystem::path profile_path =
+        std::filesystem::temp_directory_path() / "minizero_jpsro_profile_test.tsv";
+    {
+        std::ofstream profile_file(profile_path);
+        profile_file << "# weight\tprofile_id\tpolicy_ids\ttrainable_mask\tmodel_paths\n"
+                     << "0.75\toracle_0\tCURRENT,p0,p1\t1,0,0\tCURRENT,/tmp/p0.pt,/tmp/p1.pt\n";
+    }
+    const std::vector<zero::JPSROProfile> profiles = zero::loadJPSROProfiles(profile_path.string());
+    assert(profiles.size() == 1);
+    assert(std::abs(profiles[0].weight - 0.75f) < 1e-6f);
+    assert(profiles[0].trainable_mask == "1,0,0");
+    std::filesystem::remove(profile_path);
 
     MCTS mcts(8);
     mcts.reset();

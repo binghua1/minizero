@@ -15,6 +15,11 @@ if(GAME_TYPE STREQUAL "TICTACMO")
         COMMAND ${Python3_EXECUTABLE} -m unittest -v tests/test_behavior_conditioning.py
         WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
     )
+    add_test(
+        NAME jpsro_test
+        COMMAND ${Python3_EXECUTABLE} -m unittest -v tests/test_jpsro.py
+        WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+    )
 endif()
 
 if(GAME_TYPE STREQUAL "BLOKUS10")
@@ -27,6 +32,11 @@ if(GAME_TYPE STREQUAL "BLOKUS10")
     add_test(
         NAME behavior_conditioning_test
         COMMAND ${Python3_EXECUTABLE} -m unittest -v tests/test_behavior_conditioning.py
+        WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+    )
+    add_test(
+        NAME jpsro_test
+        COMMAND ${Python3_EXECUTABLE} -m unittest -v tests/test_jpsro.py
         WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
     )
 endif()

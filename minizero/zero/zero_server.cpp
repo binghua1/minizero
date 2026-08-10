@@ -8,6 +8,7 @@
 #include <cassert>
 #include <cmath>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <limits>
 #include <numeric>
@@ -28,6 +29,41 @@ std::vector<float> calculatePopulationSeatBaseWeights(int min_seats, int max_sea
     const float sum = std::accumulate(weights.begin(), weights.end(), 0.0f);
     for (float& weight : weights) { weight /= sum; }
     return weights;
+}
+
+std::vector<JPSROProfile> loadJPSROProfiles(const std::string& path)
+{
+    std::ifstream stream(path);
+    if (!stream) { throw std::runtime_error("cannot open JPSRO profile file: " + path); }
+    std::vector<JPSROProfile> profiles;
+    std::string line;
+    int line_number = 0;
+    while (std::getline(stream, line)) {
+        ++line_number;
+        if (line.empty() || line[0] == '#') { continue; }
+        std::vector<std::string> fields;
+        std::stringstream line_stream(line);
+        std::string field;
+        while (std::getline(line_stream, field, '\t')) { fields.push_back(field); }
+        if (fields.size() != 5) {
+            throw std::runtime_error("invalid JPSRO profile at line " + std::to_string(line_number));
+        }
+        JPSROProfile profile{std::stof(fields[0]), fields[1], fields[2], fields[3], fields[4]};
+        if (!std::isfinite(profile.weight) || profile.weight <= 0.0f ||
+            profile.profile_id.empty() || profile.policy_ids.empty() ||
+            profile.trainable_mask.empty() || profile.model_paths.empty()) {
+            throw std::runtime_error("invalid JPSRO profile value at line " + std::to_string(line_number));
+        }
+        for (const auto* value : {&profile.profile_id, &profile.policy_ids,
+                                  &profile.trainable_mask, &profile.model_paths}) {
+            if (value->find_first_of(" \r\n") != std::string::npos) {
+                throw std::runtime_error("JPSRO profile fields cannot contain spaces");
+            }
+        }
+        profiles.push_back(std::move(profile));
+    }
+    if (profiles.empty()) { throw std::runtime_error("JPSRO profile file has no profiles: " + path); }
+    return profiles;
 }
 
 using namespace minizero;
@@ -255,6 +291,13 @@ void ZeroServer::initialize()
     shared_data_.num_op_worker_ = 0;
     shared_data_.model_iteration_ = stoi(nn_file_name);
     shared_data_.updated_conf_str_ = getUpdatedConfig();
+    if (config::zero_use_jpsro) {
+        if (config::zero_use_population) {
+            throw std::runtime_error("zero_use_jpsro and zero_use_population are mutually exclusive");
+        }
+        jpsro_profiles_ = loadJPSROProfiles(config::zero_jpsro_profile_file);
+        shared_data_.logger_.addTrainingLog("[JPSRO Profiles] Loaded " + std::to_string(jpsro_profiles_.size()));
+    }
 }
 
 void ZeroServer::selfPlay()
@@ -370,14 +413,29 @@ void ZeroServer::selfPlay()
 
 void ZeroServer::broadcastSelfPlayJob()
 {
-    const std::vector<int> population_iterations = getPopulationIterations();
+    const std::vector<int> population_iterations = config::zero_use_jpsro ? std::vector<int>{} : getPopulationIterations();
     boost::lock_guard<boost::mutex> lock(worker_mutex_);
     size_t self_play_worker_index = 0;
     for (auto& worker : connections_) {
         if (!worker->isIdle() || worker->getType() != "sp") { continue; }
         worker->setIdle(false);
         worker->write("load_model " + config::zero_training_directory + "/model/weight_iter_" + std::to_string(shared_data_.getModelIetration()) + ".pt");
-        if (!population_iterations.empty()) {
+        if (config::zero_use_jpsro) {
+            const float total_weight = std::accumulate(
+                jpsro_profiles_.begin(), jpsro_profiles_.end(), 0.0f,
+                [](float total, const JPSROProfile& profile) { return total + profile.weight; });
+            float draw = utils::Random::randReal(total_weight);
+            const JPSROProfile* selected = &jpsro_profiles_.back();
+            for (const auto& profile : jpsro_profiles_) {
+                draw -= profile.weight;
+                if (draw <= 0.0f) {
+                    selected = &profile;
+                    break;
+                }
+            }
+            worker->write("load_profile " + selected->profile_id + " " + selected->policy_ids + " " +
+                          selected->trainable_mask + " " + selected->model_paths);
+        } else if (!population_iterations.empty()) {
             const size_t rotation = iteration_ / std::max(1, config::zero_population_rotation_interval);
             const size_t opponent_index = (self_play_worker_index + rotation) % population_iterations.size();
             const int opponent_iteration = population_iterations[opponent_index];

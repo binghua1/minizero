@@ -56,7 +56,7 @@ void MCTSSearchData::clear()
 void ZeroActor::reset()
 {
     BaseActor::reset();
-    samplePopulationLineup();
+    if (!policy_profile_enabled_) { samplePopulationLineup(); }
     enable_resign_ = (utils::Random::randReal() < config::zero_disable_resign_ratio ? false : true);
 }
 
@@ -209,6 +209,12 @@ void ZeroActor::setPopulationNetworks(int current_network_id,
                                       const std::vector<float>& current_seat_weights)
 {
     if (!current_network) { throw std::runtime_error("population current network is missing"); }
+    policy_profile_enabled_ = false;
+    policy_profile_id_.clear();
+    profile_network_ids_.clear();
+    profile_networks_.clear();
+    seat_policy_ids_.clear();
+    trainable_seats_.clear();
     current_network_id_ = current_network_id;
     current_network_ = current_network;
     historical_network_id_ = historical_network_id;
@@ -216,6 +222,34 @@ void ZeroActor::setPopulationNetworks(int current_network_id,
     historical_iteration_ = historical_iteration;
     current_seat_weights_ = current_seat_weights;
     samplePopulationLineup();
+    activateNetworkForTurn();
+}
+
+void ZeroActor::setPolicyProfile(const std::string& profile_id,
+                                 const std::vector<int>& network_ids,
+                                 const std::vector<std::shared_ptr<network::Network>>& networks,
+                                 const std::vector<std::string>& policy_ids,
+                                 const std::vector<bool>& trainable_seats)
+{
+    const int num_players = env_.getNumPlayer();
+    if (profile_id.empty() || static_cast<int>(network_ids.size()) != num_players ||
+        static_cast<int>(networks.size()) != num_players ||
+        static_cast<int>(policy_ids.size()) != num_players ||
+        static_cast<int>(trainable_seats.size()) != num_players) {
+        throw std::runtime_error("JPSRO profile must specify every player seat");
+    }
+    if (std::count(trainable_seats.begin(), trainable_seats.end(), true) != 1) {
+        throw std::runtime_error("JPSRO oracle profile must have exactly one trainable responder seat");
+    }
+    if (std::any_of(networks.begin(), networks.end(), [](const auto& network) { return !network; })) {
+        throw std::runtime_error("JPSRO profile contains a missing network");
+    }
+    policy_profile_enabled_ = true;
+    policy_profile_id_ = profile_id;
+    profile_network_ids_ = network_ids;
+    profile_networks_ = networks;
+    seat_policy_ids_ = policy_ids;
+    trainable_seats_ = trainable_seats;
     activateNetworkForTurn();
 }
 
@@ -255,6 +289,16 @@ void ZeroActor::samplePopulationLineup()
 
 void ZeroActor::activateNetworkForTurn()
 {
+    if (policy_profile_enabled_) {
+        const int player_index = env::playerToIndex(env_.getTurn());
+        if (player_index < 0 || player_index >= static_cast<int>(profile_networks_.size())) {
+            throw std::runtime_error("turn does not map to a JPSRO profile seat");
+        }
+        active_model_id_ = player_index;
+        active_network_id_ = profile_network_ids_[player_index];
+        setNetwork(profile_networks_[player_index]);
+        return;
+    }
     if (!current_network_) { return; }
     const int player_index = env::playerToIndex(env_.getTurn());
     const bool use_history = historical_network_ && historical_iteration_ >= 0 &&
@@ -268,7 +312,21 @@ void ZeroActor::activateNetworkForTurn()
 std::string ZeroActor::getRecord(const std::unordered_map<std::string, std::string>& tags) const
 {
     auto population_tags = tags;
-    if (historical_iteration_ >= 0) {
+    if (policy_profile_enabled_) {
+        std::ostringstream policies;
+        std::ostringstream trainable;
+        for (size_t i = 0; i < seat_policy_ids_.size(); ++i) {
+            if (i > 0) {
+                policies << ",";
+                trainable << ",";
+            }
+            policies << seat_policy_ids_[i];
+            trainable << (trainable_seats_[i] ? "1" : "0");
+        }
+        population_tags["JI"] = policy_profile_id_;
+        population_tags["JP"] = policies.str();
+        population_tags["TM"] = trainable.str();
+    } else if (historical_iteration_ >= 0) {
         std::ostringstream lineup;
         for (size_t i = 0; i < seat_model_ids_.size(); ++i) {
             if (i > 0) { lineup << ","; }
@@ -285,7 +343,17 @@ std::vector<std::pair<std::string, std::string>> ZeroActor::getActionInfo() cons
     // ignore recording mcts action info if there is no search
     if (getMCTS()->getRootNode()->getCount() > 0) {
         auto action_info = BaseActor::getActionInfo();
-        if (historical_iteration_ >= 0) {
+        if (policy_profile_enabled_) {
+            // BaseActor records action info after env.act(), when env_.getTurn()
+            // already points at the next player. active_model_id_ is the seat
+            // that actually searched and played the recorded action.
+            const int player_index = active_model_id_;
+            if (player_index < 0 || player_index >= static_cast<int>(seat_policy_ids_.size())) {
+                throw std::runtime_error("turn does not map to a JPSRO profile seat");
+            }
+            action_info.push_back({"PI", seat_policy_ids_[player_index]});
+            action_info.push_back({"TR", trainable_seats_[player_index] ? "1" : "0"});
+        } else if (historical_iteration_ >= 0) {
             action_info.push_back({"MI", std::to_string(active_model_id_)});
             action_info.push_back({"TR", active_model_id_ == 0 ? "1" : "0"});
         }

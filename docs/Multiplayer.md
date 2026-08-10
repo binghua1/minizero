@@ -1,5 +1,8 @@
 # Multiplayer AlphaZero
 
+The empirical-game population framework, CCE formulas, one-responder oracle
+training, and full workflow are documented in [MiniZero JPSRO](JPSRO.md).
+
 The classic four-player Blokus environment and its large spatial action representation are documented in [Blokus.md](Blokus.md). A proposed path from the current AlphaZero-only multiplayer implementation to competitive general-sum MuZero is in [MultiplayerMuZeroResearch.md](MultiplayerMuZeroResearch.md).
 
 MiniZero's multiplayer AlphaZero path uses an absolute utility vector at network leaves and terminal states. MCTS edges remain scalar, with selectable MaxN or Paranoid backup semantics.
