@@ -4,6 +4,19 @@ set -e
 env_cmakelists="$(dirname $(readlink -f "$0"))/../minizero/environment/CMakeLists.txt"
 support_games=($(awk '/target_include_directories/,/\)/' ${env_cmakelists} | sed 's|/|\n|g' | grep -v -E 'target|environment|PUBLIC|CMAKE_CURRENT_SOURCE_DIR|base|stochastic|)'))
 
+# Linked worktrees may be mounted into a container without their external
+# git-dir. Git metadata is useful for version reporting, but is not required to
+# compile MiniZero.
+if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+	git_hash=$(git log -1 --format=%H)
+	git_short_hash=$(git describe --abbrev=6 --dirty --always --exclude '*')
+	git config core.hooksPath .githooks || echo "warning: cannot configure Git hooks" >&2
+else
+	git_hash=xxxxxx
+	git_short_hash=xxxxxx
+	echo "warning: Git metadata unavailable; building with version xxxxxx" >&2
+fi
+
 usage() {
 	echo "Usage: $0 GAME_TYPE BUILD_TYPE"
 	echo ""
@@ -40,8 +53,6 @@ build_game() {
 	fi
 
 	# create git info file
-	git_hash=$(git log -1 --format=%H)
-	git_short_hash=$(git describe --abbrev=6 --dirty --always --exclude '*')
 	mkdir -p git_info
 	git_info=$(echo -e "#pragma once\n\n#define GIT_HASH \"${git_hash}\"\n#define GIT_SHORT_HASH \"${git_short_hash}\"")
 	if [ ! -f git_info/git_info.h ] || [ $(diff -q <(echo "${git_info}") <(cat git_info/git_info.h) | wc -l 2>/dev/null) -ne 0 ]; then
@@ -52,9 +63,6 @@ build_game() {
 	make -j$(nproc --all)
 	cd ../..
 }
-
-# add environment settings
-git config core.hooksPath .githooks
 
 game_type=${1:-all}
 build_type=${2:-release}
