@@ -89,6 +89,12 @@ freeze_policy() {
     fi
 }
 
+solve_meta() {
+    local generation=$1
+    python3 tools/jpsro.py solve "$meta_dir" --min-games "$eval_games" --tolerance "$tolerance"
+    cp "$meta_dir/meta_strategy.json" "$meta_dir/meta_strategy_g${generation}.json"
+}
+
 [[ $# -eq 2 ]] || { usage; exit 2; }
 run_dir=$(readlink -m "$1")
 source_config=$(readlink -f "$2")
@@ -147,7 +153,7 @@ if [[ ! -f "$run_dir/.generation_0_complete" ]]; then
     [[ -d "$meta_dir" ]] || python3 tools/jpsro.py init "$meta_dir" --players 3 --shared-pool
     freeze_policy 0
     evaluate_profiles "$run_dir/eval_g0_full"
-    python3 tools/jpsro.py solve "$meta_dir" --min-games "$eval_games" --tolerance "$tolerance"
+    solve_meta 0
     touch "$run_dir/.generation_0_complete"
 fi
 
@@ -164,7 +170,7 @@ for ((generation = 1; generation < ${#boundaries[@]}; ++generation)); do
     evaluate_profiles "$run_dir/eval_g${generation}_deviation" "p$generation"
     python3 tools/jpsro.py deviation-gap "$meta_dir" "p$generation" | tee "$run_dir/deviation_g${generation}.json"
     evaluate_profiles "$run_dir/eval_g${generation}_full"
-    python3 tools/jpsro.py solve "$meta_dir" --min-games "$eval_games" --tolerance "$tolerance"
+    solve_meta "$generation"
     touch "$marker"
 done
 
