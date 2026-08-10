@@ -76,8 +76,15 @@ evaluate_profiles() {
         "${args[@]}"
     fi
     [[ -f "$manifest" ]] || return
-    python3 tools/multiplayer-eval.py "$manifest" "$output_dir" \
-        -g "$gpu" --num_threads "$eval_threads" --resume
+    if python3 -c 'import json,sys; raise SystemExit("batched_evaluation" not in json.load(open(sys.argv[1])))' "$manifest"; then
+        python3 tools/jpsro-batched-eval.py "$manifest" "$output_dir" \
+            -g "$eval_gpu" --batch-size "$eval_batch" \
+            --cpu-threads "$eval_threads" --resume
+    else
+        # Compatibility for manifests created by the earlier console-arena controller.
+        python3 tools/multiplayer-eval.py "$manifest" "$output_dir" \
+            -g "$eval_gpu" --num_threads "$eval_threads" --resume
+    fi
     python3 tools/jpsro.py ingest "$meta_dir" "$manifest" "$output_dir/games.jsonl"
 }
 
@@ -119,6 +126,7 @@ selfplay_batch=${JPSRO_SELFPLAY_BATCH:-64}
 selfplay_ratio=${JPSRO_SELFPLAY_RATIO:-0.7}
 cpu_threads=${JPSRO_CPU_THREADS:-4}
 eval_games=${JPSRO_EVAL_GAMES:-20}
+eval_batch=${JPSRO_EVAL_BATCH:-64}
 eval_threads=${JPSRO_EVAL_THREADS:-4}
 eval_noise=${JPSRO_EVAL_NOISE:-true}
 simulations=${JPSRO_SIMULATIONS:-50}
@@ -128,13 +136,15 @@ admission_gain=${JPSRO_ADMISSION_GAIN:-0.02}
 admission_confidence=${JPSRO_ADMISSION_CONFIDENCE:-2.0}
 port=${JPSRO_PORT:-10021}
 
-for value in "$bootstrap_iterations" "$oracle_interval" "$total_iterations" "$selfplay_workers" "$selfplay_batch"; do
+for value in "$bootstrap_iterations" "$oracle_interval" "$total_iterations" "$selfplay_workers" "$selfplay_batch" "$eval_batch" "$eval_threads"; do
     [[ "$value" =~ ^[1-9][0-9]*$ ]] || die "iteration and self-play parallelism settings must be positive integers"
 done
 (( bootstrap_iterations < total_iterations )) || die "bootstrap iterations must be below total iterations"
 python3 -c 'import sys; value=float(sys.argv[1]); assert 0 <= value <= 1' "$selfplay_ratio" || die "JPSRO_SELFPLAY_RATIO must be between 0 and 1"
 worker_gpu=${JPSRO_SELFPLAY_GPU:-$gpu}
 [[ "$worker_gpu" =~ ^[0-9]$ ]] || die "JPSRO_SELFPLAY_GPU must be one GPU index"
+eval_gpu=${JPSRO_EVAL_GPU:-$gpu}
+[[ "$eval_gpu" =~ ^[0-9]$ ]] || die "JPSRO_EVAL_GPU must be one GPU index"
 sp_gpu=""
 for ((worker = 0; worker < selfplay_workers; ++worker)); do sp_gpu+="$worker_gpu"; done
 

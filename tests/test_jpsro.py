@@ -1,5 +1,7 @@
 import json
+import importlib.util
 import math
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -12,7 +14,27 @@ from minizero.jpsro.workflow import (
 )
 
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+BATCHED_EVAL = REPO_ROOT / "tools" / "jpsro-batched-eval.py"
+
+
+def load_batched_eval_module():
+    spec = importlib.util.spec_from_file_location("jpsro_batched_eval_under_test", BATCHED_EVAL)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 class JPSROTest(unittest.TestCase):
+    def test_batched_eval_parses_multiplayer_selfplay_result(self):
+        evaluator = load_batched_eval_module()
+        parsed = evaluator.parse_selfplay(
+            "SelfPlay true 0 7 1,-1,-1 (;GM[tictacmo]RE[1,-1,-1]) #\n", 3
+        )
+        self.assertEqual(parsed, ([1.0, -1.0, -1.0],
+                                  "(;GM[tictacmo]RE[1,-1,-1])"))
+
     def test_evaluation_manifest_reuses_duplicate_policy_engines(self):
         with tempfile.TemporaryDirectory() as directory:
             state = JPSROState.create(Path(directory) / "state", 3, shared_pool=True)
@@ -25,6 +47,9 @@ class JPSROTest(unittest.TestCase):
                 directory,
             )
             self.assertTrue(manifest["share_agent_engines"])
+            self.assertEqual(manifest["agents"][0]["model_path"], str(model.resolve()))
+            self.assertEqual(manifest["batched_evaluation"]["config_file"],
+                             str((Path(directory) / "game.cfg").resolve()))
 
     def test_payoff_online_statistics_round_trip(self):
         table = PayoffTable(3)

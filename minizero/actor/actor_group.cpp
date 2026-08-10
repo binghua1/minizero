@@ -366,24 +366,29 @@ void ActorGroup::handleCommand(const std::string& command_prefix, const std::str
                 throw std::runtime_error("load_profile trainable mask must contain only 0 or 1");
             }
             trainable_seats[player] = mask_values[player] == "1";
-            if (trainable_seats[player] != (model_paths[player] == "CURRENT")) {
+            if (!config::zero_jpsro_eval_only &&
+                trainable_seats[player] != (model_paths[player] == "CURRENT")) {
                 throw std::runtime_error("exactly the trainable responder must use the CURRENT model");
+            }
+            if (config::zero_jpsro_eval_only && model_paths[player] == "CURRENT") {
+                throw std::runtime_error("JPSRO evaluation profiles must use frozen models at every seat");
             }
             if (model_paths[player] != "CURRENT" &&
                 std::find(frozen_paths.begin(), frozen_paths.end(), model_paths[player]) == frozen_paths.end()) {
                 frozen_paths.push_back(model_paths[player]);
             }
         }
-        if (static_cast<int>(frozen_paths.size()) >= num_players) {
+        const int reserved_slots = config::zero_jpsro_eval_only ? 0 : 1;
+        if (static_cast<int>(frozen_paths.size()) > num_players - reserved_slots) {
             throw std::runtime_error("JPSRO profile has more frozen models than available player slots");
         }
 
         const int num_gpu = getSharedData()->num_gpu_;
         std::vector<bool> used_slots(num_players, false);
-        used_slots[0] = true;
+        if (!config::zero_jpsro_eval_only) { used_slots[0] = true; }
         for (const std::string& model_path : frozen_paths) {
             int selected_slot = -1;
-            for (int slot = 1; slot < num_players; ++slot) {
+            for (int slot = reserved_slots; slot < num_players; ++slot) {
                 const int network_id = slot * num_gpu;
                 if (!used_slots[slot] && network_id < static_cast<int>(getSharedData()->network_model_paths_.size()) &&
                     getSharedData()->network_model_paths_[network_id] == model_path) {
@@ -393,7 +398,7 @@ void ActorGroup::handleCommand(const std::string& command_prefix, const std::str
             }
             if (selected_slot < 0) {
                 selected_slot = static_cast<int>(
-                    std::find(used_slots.begin() + 1, used_slots.end(), false) - used_slots.begin());
+                    std::find(used_slots.begin() + reserved_slots, used_slots.end(), false) - used_slots.begin());
             }
             if (selected_slot >= num_players) { throw std::runtime_error("no free JPSRO network slot"); }
             used_slots[selected_slot] = true;
