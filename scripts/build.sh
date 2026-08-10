@@ -1,7 +1,9 @@
 #!/bin/bash
 set -e
 
-env_cmakelists="$(dirname $(readlink -f "$0"))/../minizero/environment/CMakeLists.txt"
+repo_root=$(readlink -f "$(dirname "$0")/..")
+cd "$repo_root"
+env_cmakelists="$repo_root/minizero/environment/CMakeLists.txt"
 support_games=($(awk '/target_include_directories/,/\)/' ${env_cmakelists} | sed 's|/|\n|g' | grep -v -E 'target|environment|PUBLIC|CMAKE_CURRENT_SOURCE_DIR|base|stochastic|)'))
 
 # Linked worktrees may be mounted into a container without their external
@@ -36,8 +38,11 @@ build_game() {
 	# check whether the build type and cache are consistent
 	if [ -f "build/${game_type}/CMakeCache.txt" ]; then
 		cache_build_type=$(grep -oP "CMAKE_BUILD_TYPE:STRING=\K\w+" build/${game_type}/CMakeCache.txt)
-		if [ "${cache_build_type}" != "${build_type}" ]; then
-			rm -rf build/${game_type}
+		cache_source=$(sed -n 's|^CMAKE_HOME_DIRECTORY:INTERNAL=||p' build/${game_type}/CMakeCache.txt)
+		if [ "${cache_build_type}" != "${build_type}" ] || [ "${cache_source}" != "${repo_root}" ]; then
+			echo "rebuilding ${game_type}: CMake cache belongs to ${cache_source:-an unknown source path}"
+			# Keep generated experiment configs while discarding relocatable build artifacts.
+			find "build/${game_type}" -mindepth 1 -maxdepth 1 ! -name '*.cfg' -exec rm -rf -- {} +
 		fi
 	fi
 
