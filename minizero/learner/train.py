@@ -89,6 +89,10 @@ class Model:
 
     def load_model(self, training_dir, model_file):
         self.training_step = 0
+        if not py.use_program_auto_seed():
+            seed = py.get_program_seed()
+            np.random.seed(seed)
+            torch.manual_seed(seed)
         self.network = create_network(py.get_game_name(),
                                       py.get_nn_num_input_channels(),
                                       py.get_nn_input_channel_height(),

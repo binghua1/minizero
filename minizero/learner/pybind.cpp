@@ -33,6 +33,8 @@ PYBIND11_MODULE(minizero_py, m)
         if (success) { kEnvInstance = std::make_shared<Environment>(); }
         return success;
     });
+    m.def("get_program_seed", []() { return config::program_seed; });
+    m.def("use_program_auto_seed", []() { return config::program_auto_seed; });
     m.def("use_gumbel", []() { return config::actor_use_gumbel; });
     m.def("get_zero_replay_buffer", []() { return config::zero_replay_buffer; });
     m.def("use_per", []() { return config::learner_use_per; });
