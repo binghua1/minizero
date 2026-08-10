@@ -54,11 +54,26 @@ JPSRO_BOUNDARIES=50,100,150,200,250,300 \
   tools/tictacmo-jpsro.sh runs/tictacmo_jpsro_300_s0 path/to/tictacmo.cfg
 ```
 
+Alternatively, generate oracle boundaries automatically until a fixed total:
+
+```bash
+JPSRO_BOOTSTRAP_ITERATIONS=5 JPSRO_ORACLE_INTERVAL=5 JPSRO_TOTAL_ITERATIONS=30 \
+  tools/tictacmo-jpsro.sh runs/tictacmo_jpsro_auto_s0 path/to/tictacmo.cfg
+```
+
+This produces boundaries `5,10,15,20,25,30`, hence six frozen policies. For
+three players, a complete final payoff table then contains `6^3 = 216` ordered
+profiles. Arena repeats of one profile are automatically sharded when there are
+fewer profiles than evaluation workers, and duplicate policies within a lineup
+share one persistent console engine per worker.
+
 Other overrides are `JPSRO_GAMES_PER_ITERATION`, `JPSRO_TRAINING_STEPS`,
 `JPSRO_LEARNER_BATCH`, `JPSRO_SELFPLAY_BATCH`, `JPSRO_CPU_THREADS`,
 `JPSRO_EVAL_GAMES`, `JPSRO_EVAL_THREADS`, `JPSRO_EVAL_NOISE`,
 `JPSRO_SIMULATIONS`, `JPSRO_GPU`, `JPSRO_SP_GPU`, `JPSRO_SEED`, `JPSRO_PORT`, and
-`JPSRO_TOLERANCE`.
+`JPSRO_TOLERANCE`. Automatic generation uses `JPSRO_BOOTSTRAP_ITERATIONS`,
+`JPSRO_ORACLE_INTERVAL`, and `JPSRO_TOTAL_ITERATIONS`; explicit
+`JPSRO_BOUNDARIES` takes precedence.
 
 `JPSRO_GPU=0 JPSRO_SP_GPU=0000` keeps the learner on GPU 0 while launching four
 self-play worker processes on that same GPU. Each worker uses

@@ -273,7 +273,7 @@ def balanced_remainder_indices(seatings, remainder):
     return set(best_indices)
 
 
-def create_schedule(config):
+def create_schedule(config, target_tasks=1):
     tasks = []
     game_id = 0
     seatings = []
@@ -288,13 +288,17 @@ def create_schedule(config):
         extra_games = balanced_remainder_indices(seatings, remainder)
         game_counts = [games_per_seating + int(index in extra_games) for index in range(len(seatings))]
 
-    for task_id, ((lineup_id, seating_id, seating), game_count) in enumerate(zip(seatings, game_counts)):
+    shards_per_seating = max(1, math.ceil(target_tasks / max(1, len(seatings))))
+    for (lineup_id, seating_id, seating), game_count in zip(seatings, game_counts):
         games = []
         for repeat in range(game_count):
             games.append(GameSpec(game_id, lineup_id, seating_id, repeat, seating))
             game_id += 1
-        if games:
-            tasks.append(SeatingTask(task_id, tuple(games)))
+        num_shards = min(shards_per_seating, len(games))
+        for shard in range(num_shards):
+            shard_games = tuple(games[shard::num_shards])
+            if shard_games:
+                tasks.append(SeatingTask(len(tasks), shard_games))
     return tasks
 
 
@@ -1699,7 +1703,9 @@ def run(args):
     results_path = prepare_output(output_dir, args.resume, args.overwrite)
     existing = load_existing_results(results_path) if args.resume else []
     completed = {record["game_id"] for record in existing if not record.get("error")}
-    schedule = create_schedule(config)
+    gpus = parse_gpu_list(args.gpu)
+    worker_capacity = args.num_threads * max(1, len(gpus))
+    schedule = create_schedule(config, worker_capacity)
 
     lock_path = output_dir / "arena.lock"
     try:
@@ -1719,7 +1725,6 @@ def run(args):
     total_pending = sum(1 for task in schedule for game in task.games if game.game_id not in completed)
     try:
         with results_path.open(mode) as stream:
-            gpus = parse_gpu_list(args.gpu)
             worker_devices = [gpu for _ in range(args.num_threads) for gpu in gpus] if gpus else [""] * args.num_threads
             worker_devices = worker_devices[:max(1, min(len(worker_devices), task_queue.qsize() or 1))]
             threads = [

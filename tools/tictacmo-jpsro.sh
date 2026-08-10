@@ -10,8 +10,9 @@ usage() {
 Usage: tools/tictacmo-jpsro.sh RUN_DIR CONFIG.cfg
 
 Train one from-scratch, fixed-budget TicTacMo JPSRO run. The default generation
-boundaries are 5,15,30. Override them and other settings with JPSRO_* variables.
-Re-running the same command resumes an interrupted run.
+boundaries are 5,15,30. Set JPSRO_ORACLE_INTERVAL and JPSRO_TOTAL_ITERATIONS to
+generate regular boundaries automatically. Re-running the same command resumes
+an interrupted run.
 EOF
 }
 
@@ -106,7 +107,26 @@ case "$run_dir" in
 esac
 [[ "$run_dir" != *[,:[:space:]]* ]] || die "RUN_DIR cannot contain spaces, commas, or colons"
 
-boundaries_string=${JPSRO_BOUNDARIES:-5,15,30}
+if [[ -n ${JPSRO_BOUNDARIES:-} ]]; then
+    boundaries_string=$JPSRO_BOUNDARIES
+elif [[ -n ${JPSRO_ORACLE_INTERVAL:-} || -n ${JPSRO_TOTAL_ITERATIONS:-} || -n ${JPSRO_BOOTSTRAP_ITERATIONS:-} ]]; then
+    bootstrap_iterations=${JPSRO_BOOTSTRAP_ITERATIONS:-5}
+    oracle_interval=${JPSRO_ORACLE_INTERVAL:-5}
+    total_iterations=${JPSRO_TOTAL_ITERATIONS:-30}
+    for value in "$bootstrap_iterations" "$oracle_interval" "$total_iterations"; do
+        [[ "$value" =~ ^[1-9][0-9]*$ ]] || die "automatic iteration settings must be positive integers"
+    done
+    (( bootstrap_iterations < total_iterations )) || die "bootstrap iterations must be below total iterations"
+    boundaries_string=$bootstrap_iterations
+    boundary=$bootstrap_iterations
+    while (( boundary < total_iterations )); do
+        boundary=$((boundary + oracle_interval))
+        (( boundary > total_iterations )) && boundary=$total_iterations
+        boundaries_string+=",$boundary"
+    done
+else
+    boundaries_string=5,15,30
+fi
 IFS=, read -ra boundaries <<< "$boundaries_string"
 (( ${#boundaries[@]} >= 2 )) || die "JPSRO_BOUNDARIES needs bootstrap and at least one oracle boundary"
 previous=0
