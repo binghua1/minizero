@@ -98,6 +98,51 @@ class MultiplayerEvalTest(unittest.TestCase):
         self.assertEqual((new_wins, old_wins, draws, errors, valid), (1, 0, 1, 0, 2))
         self.assertEqual(score, 0.75)
 
+    def test_model_fight_builds_both_compositions_and_all_seats(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            model_a = temp / "jpsro.pt"
+            model_b = temp / "alphazero.pt"
+            config_a = temp / "jpsro.cfg"
+            config_b = temp / "alphazero.cfg"
+            for path in (model_a, model_b):
+                path.touch()
+            for path in (config_a, config_b):
+                path.write_text("actor_num_simulation=50\n")
+            output = temp / "fight"
+
+            subprocess.run(
+                [
+                    sys.executable, str(ARENA), "model-fight", "tictacmo",
+                    str(model_a), str(model_b),
+                    "--conf-file-a", str(config_a),
+                    "--conf-file-b", str(config_b),
+                    "--names", "jpsro", "alphazero",
+                    "--games", "12",
+                    "--executable", str(FAKE_ENGINE),
+                    "--output", str(output),
+                    "--num_threads", "2",
+                ],
+                cwd=REPO_ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            manifest = json.loads((output / "arena.json").read_text())
+            self.assertEqual(manifest["lineups"], [
+                ["jpsro", "jpsro", "alphazero"],
+                ["jpsro", "alphazero", "alphazero"],
+            ])
+            self.assertEqual(manifest["seat_mode"], "all_permutations")
+            self.assertEqual(manifest["num_games"], 12)
+            self.assertEqual(len((output / "games.jsonl").read_text().splitlines()), 12)
+            with (output / "fight_summary.csv").open() as stream:
+                summary = next(csv.DictReader(stream))
+            self.assertEqual(summary["model_a"], "jpsro")
+            self.assertEqual(summary["model_b"], "alphazero")
+            self.assertEqual(summary["valid_games"], "12")
+
     def test_blokus_elimination_passes_skip_players_and_end_after_four(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp = Path(temp_dir)
