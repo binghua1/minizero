@@ -73,6 +73,26 @@ The evaluation results are stored inside `FOLDER1`, in a subfolder named `[FOLDE
 > **Note**
 > Before the fight-evaluation, it is suggested that a self-evaluation for `FOLDER1` be run first to generate a baseline strength, which is necessary for the strength comparison.
 
+### Multiplayer model fight
+
+For three-or-more-player games, compare two arbitrary checkpoints with the
+seat-balanced arena instead of the two-engine `fight-eval.sh`:
+
+```bash
+python3 tools/multiplayer-eval.py model-fight tictacmo MODEL_A MODEL_B \
+  --conf-file-a CONFIG_A --conf-file-b CONFIG_B \
+  --names jpsro alphazero --games 600 --num-simulations 50 --noise \
+  -g 0 --num_threads 4 --output OUTPUT_DIRECTORY
+```
+
+For three players this evaluates both 2A-vs-1B and 1A-vs-2B, with every
+unique seat assignment. `--games` is the total across all compositions and
+seatings. The overall model-level result is written to `fight_summary.csv`;
+`agent_summary.csv`, `seat_summary.csv`, and `seating_summary.csv` retain the
+more detailed diagnostics. `model_a_score` counts a game as an A win only when
+all top-return seats use A, as a B win only when all top-return seats use B,
+and otherwise as a draw.
+
 ## Miscellaneous Evaluation Tips
 
 ### Configurations for evaluation

@@ -1322,6 +1322,128 @@ def create_checkpoint_manifest(args, repo_root, executable, config, older, newer
     }
 
 
+def create_model_fight_manifest(args, repo_root, executable, models, configs):
+    agents = [
+        create_checkpoint_agent(
+            name, model, config, executable, repo_root, args.search_type, args)
+        for name, model, config in zip(args.names, models, configs)
+    ]
+    return {
+        "game": args.game,
+        "players": list(PLAYER_CODES[:args.num_players]),
+        "agents": agents,
+        "lineups": create_balanced_lineups(args.names, args.num_players),
+        "seat_mode": "all_permutations",
+        "num_games": args.games,
+        "max_moves": args.max_moves if args.max_moves is not None else DEFAULT_MAX_MOVES.get(args.game, 2048),
+        "terminal_passes": default_terminal_passes(args.game),
+        "pass_mode": default_pass_mode(args.game),
+        "command_timeout": args.command_timeout,
+        "seed": args.seed,
+        "share_agent_engines": True,
+        "model_fight": {"model_a": args.names[0], "model_b": args.names[1]},
+    }
+
+
+def model_fight_main(argv):
+    parser = argparse.ArgumentParser(
+        prog="multiplayer-eval.py model-fight",
+        description="Seat-balanced multiplayer fight between two arbitrary neural models.",
+    )
+    parser.add_argument("game", help="MiniZero multiplayer game type")
+    parser.add_argument("model_a", help="first model checkpoint")
+    parser.add_argument("model_b", help="second model checkpoint")
+    parser.add_argument("--conf-file-a", required=True, help="config for the first model")
+    parser.add_argument("--conf-file-b", help="config for the second model (default: first config)")
+    parser.add_argument("--names", nargs=2, default=("model_a", "model_b"), metavar=("A", "B"))
+    parser.add_argument("--games", type=int, default=600, help="total games across every composition and seating")
+    parser.add_argument("--output", required=True, help="result directory")
+    parser.add_argument("--search-type", choices=("maxn", "paranoid", "rank"), default="maxn")
+    parser.add_argument("--num-players", type=int)
+    parser.add_argument("--num-simulations", type=int)
+    noise_group = parser.add_mutually_exclusive_group()
+    noise_group.add_argument("--noise", dest="noise", action="store_true", help="enable Dirichlet noise")
+    noise_group.add_argument("--no-noise", dest="noise", action="store_false", help="disable Dirichlet noise")
+    parser.set_defaults(noise=False)
+    parser.add_argument("-conf_str", "--conf-str", dest="conf_str", default="")
+    parser.add_argument("--max-moves", type=int)
+    parser.add_argument("--command-timeout", type=float, default=300)
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--omp-num-threads", type=int, default=2)
+    parser.add_argument("--executable", help="engine executable (default: build/GAME/minizero_GAME)")
+    parser.add_argument("-g", "--gpu", help="GPU list, for example 0123 or 0,1,2,3")
+    parser.add_argument("--num_threads", "--num-threads", "--threads", dest="num_threads", type=int, default=1)
+    resume_mode = parser.add_mutually_exclusive_group()
+    resume_mode.add_argument("--resume", action="store_true")
+    resume_mode.add_argument("--overwrite", action="store_true")
+    parser.add_argument("--dry-run", action="store_true", help="only generate arena.json")
+    args = parser.parse_args(argv)
+    args.game = args.game.lower()
+    if args.num_players is None:
+        args.num_players = 4 if args.game in ("blokus", "blokus10", "blokus15") else 3
+    if len(set(args.names)) != 2:
+        parser.error("--names must be different")
+    positive = (args.games, args.num_players, args.command_timeout, args.omp_num_threads, args.num_threads)
+    if any(value <= 0 for value in positive):
+        parser.error("game, player, timeout, and thread values must be positive")
+    if not 2 <= args.num_players <= len(PLAYER_CODES):
+        parser.error(f"--num-players must be between 2 and {len(PLAYER_CODES)}")
+    if args.num_simulations is not None and args.num_simulations <= 0:
+        parser.error("--num-simulations must be positive")
+
+    repo_root = Path(__file__).resolve().parents[1]
+    models = [Path(args.model_a).resolve(), Path(args.model_b).resolve()]
+    configs = [Path(args.conf_file_a).resolve(), Path(args.conf_file_b or args.conf_file_a).resolve()]
+    for path in models + configs:
+        if not path.is_file():
+            parser.error(f"file not found: {path}")
+    executable = Path(args.executable).resolve() if args.executable else repo_root / "build" / args.game / f"minizero_{args.game}"
+    if not executable.is_file():
+        parser.error(f"engine executable not found: {executable}; build it before evaluation")
+
+    output_dir = Path(args.output).resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = output_dir / "arena.json"
+    manifest = create_model_fight_manifest(args, repo_root, executable.resolve(), models, configs)
+    if manifest_path.exists() and not args.overwrite:
+        with manifest_path.open() as stream:
+            previous_manifest = json.load(stream)
+        if previous_manifest != manifest:
+            if not args.resume:
+                raise ValueError(f"generated settings differ from {manifest_path}; use --resume or --overwrite")
+            manifest = previous_manifest
+    if not (args.resume and manifest_path.exists()):
+        with manifest_path.open("w") as stream:
+            json.dump(manifest, stream, indent=2)
+            stream.write("\n")
+    print(f"model fight: {args.names[0]} vs {args.names[1]}, {manifest['num_games']} total seat-balanced games", flush=True)
+    print(f"arena manifest: {manifest_path}", flush=True)
+    if args.dry_run:
+        return
+
+    results_path = output_dir / "games.jsonl"
+    run(argparse.Namespace(
+        manifest=str(manifest_path), output=str(output_dir), gpu=args.gpu,
+        num_threads=args.num_threads, games_per_seating=None, num_games=None,
+        max_moves=None, resume=args.resume, overwrite=args.overwrite,
+    ))
+    a_wins, b_wins, draws, errors, valid, score = summarize_checkpoint_pair(
+        results_path, args.names[1], args.names[0])
+    rows = [{
+        "model_a": args.names[0], "model_b": args.names[1],
+        "model_a_wins": a_wins, "model_b_wins": b_wins, "draws": draws,
+        "errors": errors, "valid_games": valid,
+        "model_a_score": round(score, 6) if valid else "",
+    }]
+    write_csv(
+        output_dir / "fight_summary.csv",
+        ["model_a", "model_b", "model_a_wins", "model_b_wins", "draws",
+         "errors", "valid_games", "model_a_score"],
+        rows,
+    )
+    print(f"fight summary: {output_dir / 'fight_summary.csv'}", flush=True)
+
+
 def summarize_checkpoint_pair(results_path, older_name, newer_name):
     newer_wins = older_wins = draws = errors = 0
     with results_path.open() as stream:
@@ -1785,6 +1907,9 @@ def main():
         return
     if len(sys.argv) > 1 and sys.argv[1] == "checkpoint-sweep":
         checkpoint_sweep_main(sys.argv[2:])
+        return
+    if len(sys.argv) > 1 and sys.argv[1] == "model-fight":
+        model_fight_main(sys.argv[2:])
         return
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("manifest", help="JSON arena manifest")
