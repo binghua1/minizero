@@ -7,12 +7,25 @@ from pathlib import Path
 from minizero.jpsro.meta_solver import cce_gap, solve_cce
 from minizero.jpsro.state import JPSROState, PayoffTable
 from minizero.jpsro.workflow import (
-    candidate_deviation_gains, create_oracle_profiles, ingest_evaluation,
+    candidate_deviation_gains, create_evaluation_manifest, create_oracle_profiles, ingest_evaluation,
     write_oracle_plan,
 )
 
 
 class JPSROTest(unittest.TestCase):
+    def test_evaluation_manifest_reuses_duplicate_policy_engines(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = JPSROState.create(Path(directory) / "state", 3, shared_pool=True)
+            model = Path(directory) / "p0.pt"
+            model.touch()
+            state.add_policy("p0", model)
+            manifest = create_evaluation_manifest(
+                state, [("p0", "p0", "p0")], "tictacmo",
+                Path(directory) / "game.cfg", Path(directory) / "game",
+                directory,
+            )
+            self.assertTrue(manifest["share_agent_engines"])
+
     def test_payoff_online_statistics_round_trip(self):
         table = PayoffTable(3)
         table.add(("a", "b", "c"), (1, 2, 3))

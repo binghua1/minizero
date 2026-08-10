@@ -25,6 +25,22 @@ def load_arena_module():
 
 
 class MultiplayerEvalTest(unittest.TestCase):
+    def test_schedule_shards_one_seating_across_parallel_workers(self):
+        arena = load_arena_module()
+        tasks = arena.create_schedule({
+            "lineups": [["p0", "p0", "p0"]],
+            "seat_mode": "fixed",
+            "games_per_seating": 10,
+            "num_games": None,
+        }, target_tasks=4)
+        self.assertEqual(len(tasks), 4)
+        self.assertEqual(sorted(len(task.games) for task in tasks), [2, 2, 3, 3])
+        games = sorted(
+            (game for task in tasks for game in task.games),
+            key=lambda game: game.game_id,
+        )
+        self.assertEqual([game.game_id for game in games], list(range(10)))
+
     def test_resume_replays_completed_games_to_restore_engine_rng_state(self):
         arena = load_arena_module()
         calls = []
