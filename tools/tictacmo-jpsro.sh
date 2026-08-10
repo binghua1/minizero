@@ -78,7 +78,10 @@ evaluate_profiles() {
         [[ "$eval_noise" == true ]] && args+=(--noise)
         "${args[@]}"
     fi
-    [[ -f "$manifest" ]] || return
+    # No manifest means every requested payoff is already present. This is a
+    # successful no-op (often candidate deviation games already completed the
+    # newly admitted restricted game), not an error under `set -e`.
+    [[ -f "$manifest" ]] || return 0
     if python3 -c 'import json,sys; raise SystemExit("batched_evaluation" not in json.load(open(sys.argv[1])))' "$manifest"; then
         python3 tools/jpsro-batched-eval.py "$manifest" "$output_dir" \
             -g "$eval_gpu" --batch-size "$eval_batch" \
