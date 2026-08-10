@@ -51,9 +51,20 @@ tools/tictacmo-jpsro.sh oracle   runs/tictacmo_jpsro_s0
 tools/tictacmo-jpsro.sh evaluate runs/tictacmo_jpsro_s0
 ```
 
-The defaults are 10 iterations, 2000 games per iteration, 250 learner steps,
-batch size 1024, 50 MCTS simulations, self-play batch 96, and seed 0. For
-example, change both training budgets together with:
+An existing multiplayer AlphaZero run can be reused as the initial population;
+this skips baseline training but gives up an exactly paired initialization:
+
+```bash
+tools/tictacmo-jpsro.sh reuse runs/tictacmo_jpsro_s0 \
+  path/to/existing_training_dir path/to/tictacmo.cfg
+tools/tictacmo-jpsro.sh oracle   runs/tictacmo_jpsro_s0
+tools/tictacmo-jpsro.sh evaluate runs/tictacmo_jpsro_s0
+```
+
+The defaults match the existing TicTacMo experiment: 30 iterations, 2000
+games per iteration, 500 learner steps, learner batch size 1024, 50 MCTS
+simulations, self-play batch 32, four CPU threads, and seed 0. For example,
+change both training budgets together with:
 
 ```bash
 JPSRO_ITERATIONS=20 JPSRO_TRAINING_STEPS=500 \
