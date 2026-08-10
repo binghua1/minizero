@@ -25,6 +25,7 @@ public:
     std::mutex mutex_;
     std::vector<std::shared_ptr<BaseActor>> actors_;
     std::vector<std::shared_ptr<network::Network>> networks_;
+    std::vector<std::string> network_model_paths_;
     std::vector<std::vector<std::shared_ptr<network::NetworkOutput>>> network_outputs_;
 };
 

@@ -18,6 +18,16 @@ namespace minizero::zero {
 
 std::vector<float> calculatePopulationSeatBaseWeights(int min_seats, int max_seats, bool balance_seats);
 
+struct JPSROProfile {
+    float weight;
+    std::string profile_id;
+    std::string policy_ids;
+    std::string trainable_mask;
+    std::string model_paths;
+};
+
+std::vector<JPSROProfile> loadJPSROProfiles(const std::string& path);
+
 class ZeroLogger {
 public:
     ZeroLogger() {}
@@ -132,6 +142,7 @@ protected:
     std::vector<float> latest_game_returns_;
     std::vector<std::vector<float>> latest_game_player_returns_;
     std::unordered_map<int64_t, std::pair<double, int>> population_seat_return_stats_;
+    std::vector<JPSROProfile> jpsro_profiles_;
 };
 
 } // namespace minizero::zero

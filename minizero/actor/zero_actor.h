@@ -47,6 +47,11 @@ public:
                                const std::shared_ptr<network::Network>& historical_network,
                                int historical_iteration,
                                const std::vector<float>& current_seat_weights);
+    void setPolicyProfile(const std::string& profile_id,
+                          const std::vector<int>& network_ids,
+                          const std::vector<std::shared_ptr<network::Network>>& networks,
+                          const std::vector<std::string>& policy_ids,
+                          const std::vector<bool>& trainable_seats);
     std::string getRecord(const std::unordered_map<std::string, std::string>& tags = {}) const override;
     std::shared_ptr<Search> createSearch() override { return std::make_shared<MCTS>(tree_node_size_); }
     std::shared_ptr<MCTS> getMCTS() { return std::static_pointer_cast<MCTS>(search_); }
@@ -87,6 +92,12 @@ protected:
     std::shared_ptr<network::Network> historical_network_;
     std::vector<int> seat_model_ids_;
     std::vector<float> current_seat_weights_;
+    bool policy_profile_enabled_ = false;
+    std::string policy_profile_id_;
+    std::vector<int> profile_network_ids_;
+    std::vector<std::shared_ptr<network::Network>> profile_networks_;
+    std::vector<std::string> seat_policy_ids_;
+    std::vector<bool> trainable_seats_;
 };
 
 } // namespace minizero::actor

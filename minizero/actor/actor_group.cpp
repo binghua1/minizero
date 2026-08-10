@@ -11,12 +11,26 @@
 #include <stdexcept>
 #include <string>
 #include <torch/cuda.h>
+#include <unordered_map>
 #include <utility>
 
 namespace minizero::actor {
 
 using namespace network;
 using namespace utils;
+
+namespace {
+
+    std::vector<std::string> splitCSV(const std::string& value)
+    {
+        std::vector<std::string> result;
+        std::stringstream stream(value);
+        std::string item;
+        while (std::getline(stream, item, ',')) { result.push_back(item); }
+        return result;
+    }
+
+} // namespace
 
 int ThreadSharedData::getAvailableActorIndex()
 {
@@ -175,7 +189,9 @@ void ActorGroup::run()
 void ActorGroup::initialize()
 {
     const int num_gpu = std::min(static_cast<int>(torch::cuda::device_count()), config::zero_num_parallel_games);
-    const int required_gpu_threads = config::zero_use_population ? 2 * num_gpu : num_gpu;
+    const int required_gpu_threads = config::zero_use_jpsro
+                                         ? env::kMaxNumPlayers * num_gpu
+                                         : (config::zero_use_population ? 2 * num_gpu : num_gpu);
     int num_threads = std::max(required_gpu_threads, config::zero_num_threads);
     createSlaveThreads(num_threads);
     createNeuralNetworks();
@@ -198,6 +214,7 @@ void ActorGroup::createNeuralNetworks()
     assert(num_networks > 0);
     getSharedData()->num_gpu_ = num_networks;
     getSharedData()->networks_.resize(num_networks);
+    getSharedData()->network_model_paths_.resize(num_networks, config::nn_file_name);
     getSharedData()->network_outputs_.resize(num_networks);
     for (int gpu_id = 0; gpu_id < num_networks; ++gpu_id) {
         getSharedData()->networks_[gpu_id] = createNetwork(config::nn_file_name, gpu_id);
@@ -230,6 +247,15 @@ void ActorGroup::createActors()
             config::zero_population_current_seat_min > config::zero_population_current_seat_max ||
             config::nn_behavior_history_dropout < 0.0f || config::nn_behavior_history_dropout > 1.0f) {
             throw std::runtime_error("invalid multiplayer population configuration");
+        }
+    }
+    if (config::zero_use_jpsro) {
+        const int num_players = getSharedData()->actors_.front()->getEnvironment().getNumPlayer();
+        if (config::zero_use_population) {
+            throw std::runtime_error("zero_use_jpsro and zero_use_population are mutually exclusive");
+        }
+        if (num_players <= 2 || config::nn_type_name != "alphazero" || config::zero_jpsro_profile_file.empty()) {
+            throw std::runtime_error("JPSRO training requires a multiplayer AlphaZero environment and a profile file");
         }
     }
 }
@@ -280,6 +306,7 @@ void ActorGroup::handleCommand(const std::string& command_prefix, const std::str
         for (int network_id = 0; network_id < getSharedData()->num_gpu_; ++network_id) {
             auto& network = getSharedData()->networks_[network_id];
             network->loadModel(config::nn_file_name, network->getGPUID());
+            getSharedData()->network_model_paths_[network_id] = config::nn_file_name;
         }
     } else if (command_prefix == "load_population") {
         std::cerr << "[command] " << command << std::endl;
@@ -296,11 +323,13 @@ void ActorGroup::handleCommand(const std::string& command_prefix, const std::str
         if (static_cast<int>(getSharedData()->networks_.size()) == history_offset) {
             for (int gpu_id = 0; gpu_id < getSharedData()->num_gpu_; ++gpu_id) {
                 getSharedData()->networks_.push_back(createNetwork(model_path, gpu_id));
+                getSharedData()->network_model_paths_.push_back(model_path);
                 getSharedData()->network_outputs_.emplace_back();
             }
         } else {
             for (int gpu_id = 0; gpu_id < getSharedData()->num_gpu_; ++gpu_id) {
                 getSharedData()->networks_[history_offset + gpu_id]->loadModel(model_path, gpu_id);
+                getSharedData()->network_model_paths_[history_offset + gpu_id] = model_path;
             }
         }
         for (size_t actor_id = 0; actor_id < getSharedData()->actors_.size(); ++actor_id) {
@@ -312,6 +341,77 @@ void ActorGroup::handleCommand(const std::string& command_prefix, const std::str
                                               getSharedData()->networks_[history_offset + gpu_id],
                                               historical_iteration,
                                               seat_weights);
+        }
+    } else if (command_prefix == "load_profile") {
+        std::cerr << "[command] " << command << std::endl;
+        const std::vector<std::string> args = utils::stringToVector(command);
+        if (args.size() != 5) {
+            throw std::runtime_error("load_profile expects: profile_id policy_ids trainable_mask model_paths");
+        }
+        const std::string& profile_id = args[1];
+        const std::vector<std::string> policy_ids = splitCSV(args[2]);
+        const std::vector<std::string> mask_values = splitCSV(args[3]);
+        const std::vector<std::string> model_paths = splitCSV(args[4]);
+        const int num_players = getSharedData()->actors_.front()->getEnvironment().getNumPlayer();
+        if (static_cast<int>(policy_ids.size()) != num_players ||
+            static_cast<int>(mask_values.size()) != num_players ||
+            static_cast<int>(model_paths.size()) != num_players) {
+            throw std::runtime_error("load_profile field counts must equal the environment player count");
+        }
+        std::vector<bool> trainable_seats(num_players, false);
+        std::unordered_map<std::string, int> path_slots;
+        int next_slot = 1;
+        for (int player = 0; player < num_players; ++player) {
+            if (mask_values[player] != "0" && mask_values[player] != "1") {
+                throw std::runtime_error("load_profile trainable mask must contain only 0 or 1");
+            }
+            trainable_seats[player] = mask_values[player] == "1";
+            if (trainable_seats[player] != (model_paths[player] == "CURRENT")) {
+                throw std::runtime_error("exactly the trainable responder must use the CURRENT model");
+            }
+            if (model_paths[player] != "CURRENT" && !path_slots.count(model_paths[player])) {
+                path_slots[model_paths[player]] = next_slot++;
+            }
+        }
+        if (next_slot > num_players) {
+            throw std::runtime_error("JPSRO profile has more frozen models than available player slots");
+        }
+
+        const int num_gpu = getSharedData()->num_gpu_;
+        std::vector<std::pair<int, std::string>> slot_paths;
+        for (const auto& item : path_slots) { slot_paths.emplace_back(item.second, item.first); }
+        std::sort(slot_paths.begin(), slot_paths.end());
+        for (const auto& item : slot_paths) {
+            const int slot = item.first;
+            const std::string& model_path = item.second;
+            const int offset = slot * num_gpu;
+            for (int gpu_id = 0; gpu_id < num_gpu; ++gpu_id) {
+                const int network_id = offset + gpu_id;
+                if (network_id == static_cast<int>(getSharedData()->networks_.size())) {
+                    getSharedData()->networks_.push_back(createNetwork(model_path, gpu_id));
+                    getSharedData()->network_model_paths_.push_back(model_path);
+                    getSharedData()->network_outputs_.emplace_back();
+                } else if (network_id < static_cast<int>(getSharedData()->networks_.size())) {
+                    if (getSharedData()->network_model_paths_[network_id] != model_path) {
+                        getSharedData()->networks_[network_id]->loadModel(model_path, gpu_id);
+                        getSharedData()->network_model_paths_[network_id] = model_path;
+                    }
+                } else {
+                    throw std::runtime_error("JPSRO network slots are not contiguous");
+                }
+            }
+        }
+        for (size_t actor_id = 0; actor_id < getSharedData()->actors_.size(); ++actor_id) {
+            const int gpu_id = actor_id % num_gpu;
+            std::vector<int> network_ids(num_players);
+            std::vector<std::shared_ptr<Network>> networks(num_players);
+            for (int player = 0; player < num_players; ++player) {
+                const int slot = model_paths[player] == "CURRENT" ? 0 : path_slots.at(model_paths[player]);
+                network_ids[player] = slot * num_gpu + gpu_id;
+                networks[player] = getSharedData()->networks_[network_ids[player]];
+            }
+            auto zero_actor = std::dynamic_pointer_cast<ZeroActor>(getSharedData()->actors_[actor_id]);
+            zero_actor->setPolicyProfile(profile_id, network_ids, networks, policy_ids, trainable_seats);
         }
     } else if (command_prefix == "clear_population") {
         std::cerr << "[command] " << command << std::endl;

@@ -60,6 +60,8 @@ extern float zero_population_temperature;
 extern int zero_population_current_seat_min;
 extern int zero_population_current_seat_max;
 extern bool zero_population_balance_seats;
+extern bool zero_use_jpsro;
+extern std::string zero_jpsro_profile_file;
 
 // learner parameters
 extern bool learner_use_per;
