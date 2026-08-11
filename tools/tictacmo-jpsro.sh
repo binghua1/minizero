@@ -44,6 +44,29 @@ policy_registered() {
     [[ -f "$meta_dir/policies.json" ]] && grep -q "\"policy_id\": \"$policy_id\"" "$meta_dir/policies.json"
 }
 
+stage_complete() {
+    python3 -c 'import json,sys; from pathlib import Path; p=Path(sys.argv[1]); d=json.loads(p.read_text()) if p.is_file() else {}; raise SystemExit(sys.argv[2] not in d.get("completed_stages", []))' "$state_file" "$1"
+}
+
+mark_stage_complete() {
+    python3 -c 'import json,sys; from pathlib import Path; p=Path(sys.argv[1]); d=json.loads(p.read_text()) if p.is_file() else {"version":1,"completed_stages":[]}; s=sys.argv[2]; d["completed_stages"] += [] if s in d["completed_stages"] else [s]; t=p.with_suffix(p.suffix+".tmp"); t.write_text(json.dumps(d,indent=2)+"\n"); t.replace(p)' "$state_file" "$1"
+}
+
+migrate_legacy_markers() {
+    local marker stage
+    if [[ -f "$run_dir/.generation_0_complete" ]]; then
+        mark_stage_complete g0
+        rm -f "$run_dir/.generation_0_complete"
+    fi
+    for marker in "$run_dir"/.candidate_*_complete; do
+        [[ -f "$marker" ]] || continue
+        stage=${marker##*/.candidate_}
+        stage="i${stage%_complete}"
+        mark_stage_complete "$stage"
+        rm -f "$marker"
+    done
+}
+
 train_to() {
     local end_iteration=$1
     local profile_file=${2:-}
@@ -190,12 +213,18 @@ import sys
 assert float(sys.argv[1]) > 0
 assert float(sys.argv[2]) >= 0
 PY
-worker_gpu=${GUIDED_SELFPLAY_GPU:-${JPSRO_SELFPLAY_GPU:-$gpu}}
-[[ "$worker_gpu" =~ ^[0-9]$ ]] || die "JPSRO_SELFPLAY_GPU must be one GPU index"
-eval_gpu=${GUIDED_EVAL_GPU:-${JPSRO_EVAL_GPU:-$gpu}}
-[[ "$eval_gpu" =~ ^[0-9]$ ]] || die "JPSRO_EVAL_GPU must be one GPU index"
-sp_gpu=""
-for ((worker = 0; worker < selfplay_workers; ++worker)); do sp_gpu+="$worker_gpu"; done
+[[ "$gpu" =~ ^[0-9]+$ ]] || die "GUIDED_GPU must be a GPU-index string such as 0 or 0123"
+sp_gpu=${GUIDED_SELFPLAY_GPU:-${JPSRO_SELFPLAY_GPU:-}}
+if [[ -z "$sp_gpu" ]]; then
+    sp_gpu=$gpu
+    if (( ${#gpu} == 1 && selfplay_workers > 1 )); then
+        for ((worker = 1; worker < selfplay_workers; ++worker)); do sp_gpu+="$gpu"; done
+    fi
+fi
+[[ "$sp_gpu" =~ ^[0-9]+$ ]] || die "GUIDED_SELFPLAY_GPU must be a GPU-index string"
+(( ${#sp_gpu} == selfplay_workers )) || die "GUIDED_SELFPLAY_WORKERS must equal the number of GUIDED_SELFPLAY_GPU indices"
+eval_gpu=${GUIDED_EVAL_GPU:-${JPSRO_EVAL_GPU:-${gpu:0:1}}}
+[[ "$eval_gpu" =~ ^[0-9]$ ]] || die "GUIDED_EVAL_GPU must be one GPU index"
 
 config="$run_dir/$game.cfg"
 training_dir="$run_dir/training"
@@ -203,21 +232,31 @@ meta_dir="$run_dir/meta"
 frozen_dir="$run_dir/frozen"
 executable="$repo_root/build/$game/minizero_$game"
 settings_file="$run_dir/guided_pool.settings"
+state_file="$run_dir/controller_state.json"
 settings="version=1 game=$game players=$num_players seats=$current_seat_min-$current_seat_max bootstrap=$bootstrap_iterations interval=$oracle_interval total=$total_iterations games=$games steps=$training_steps learner_batch=$learner_batch selfplay_workers=$selfplay_workers selfplay_batch=$selfplay_batch current_ratio=$selfplay_ratio hard_ratio=$hard_ratio cce_ratio=$cce_ratio history_ratio=$history_ratio population_size=$population_size hard_temperature=$hard_temperature hard_confidence=$hard_confidence cpu_threads=$cpu_threads eval_games=$eval_games eval_noise=$eval_noise simulations=$simulations seed=$seed admission_gain=$admission_gain admission_confidence=$admission_confidence"
 common_conf="zero_use_population=false:zero_jpsro_selfplay_ratio=$selfplay_ratio:zero_jpsro_num_workers=$selfplay_workers:zero_population_current_seat_min=$current_seat_min:zero_population_current_seat_max=$current_seat_max:zero_population_balance_seats=true:zero_disable_resign_ratio=1:zero_num_games_per_iteration=$games:learner_training_step=$training_steps:learner_batch_size=$learner_batch:actor_num_simulation=$simulations:program_auto_seed=false:program_seed=$seed"
 
 mkdir -p "$run_dir" "$frozen_dir"
 if [[ -f "$settings_file" ]]; then
     saved_settings=$(<"$settings_file")
-    [[ "$saved_settings" == "$settings" ]] || die "resume settings differ from $settings_file"
+    saved_total=$(sed -nE 's/.*(^| )total=([0-9]+)( |$).*/\2/p' <<<"$saved_settings")
+    saved_fixed=$(sed -E 's/(^| )total=[0-9]+( |$)/ /' <<<"$saved_settings")
+    current_fixed=$(sed -E 's/(^| )total=[0-9]+( |$)/ /' <<<"$settings")
+    [[ -n "$saved_total" && "$saved_fixed" == "$current_fixed" ]] || die "resume settings other than total iterations differ from $settings_file"
+    (( total_iterations >= saved_total )) || die "GUIDED_TOTAL_ITERATIONS cannot decrease below saved total $saved_total"
+    if (( total_iterations > saved_total )); then
+        echo "$settings" > "$settings_file"
+        echo "extending guided run from $saved_total to $total_iterations iterations"
+    fi
 else
     echo "$settings" > "$settings_file"
 fi
 [[ -f "$config" ]] || cp "$source_config" "$config"
+migrate_legacy_markers
 
 # p0 is the first checkpoint of this same from-scratch run, not an external warm start.
 train_to "$bootstrap_iterations"
-if [[ ! -f "$run_dir/.generation_0_complete" ]]; then
+if ! stage_complete g0; then
     [[ -d "$meta_dir" ]] || python3 tools/jpsro.py init "$meta_dir" --players "$num_players" --shared-pool
     freeze_policy p0 0
     evaluate_profiles "$run_dir/eval_g0_full"
@@ -226,7 +265,7 @@ if [[ ! -f "$run_dir/.generation_0_complete" ]]; then
         --hard-ratio "$hard_ratio" --cce-ratio "$cce_ratio" --history-ratio "$history_ratio" \
         --temperature "$hard_temperature" --confidence "$hard_confidence" \
         --current-seat-min "$current_seat_min" --current-seat-max "$current_seat_max"
-    touch "$run_dir/.generation_0_complete"
+    mark_stage_complete g0
 fi
 
 end_iteration=$bootstrap_iterations
@@ -234,8 +273,8 @@ while (( end_iteration < total_iterations )); do
     previous_iteration=$end_iteration
     end_iteration=$((end_iteration + oracle_interval))
     (( end_iteration > total_iterations )) && end_iteration=$total_iterations
-    marker="$run_dir/.candidate_${end_iteration}_complete"
-    [[ -f "$marker" ]] && continue
+    stage="i$end_iteration"
+    stage_complete "$stage" && continue
     candidate="p$end_iteration"
     profile_file="$run_dir/guided_after_${previous_iteration}.tsv"
     [[ -f "$profile_file" ]] || die "missing guided plan: $profile_file"
@@ -262,7 +301,7 @@ while (( end_iteration < total_iterations )); do
         rm -f "$frozen_dir/$candidate.pt"
         echo "candidate $candidate rejected; continuing with the certified pool"
     fi
-    touch "$marker"
+    mark_stage_complete "$stage"
 done
 
 echo "training complete: $training_dir"

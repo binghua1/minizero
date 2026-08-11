@@ -84,9 +84,9 @@ def result_info(returns):
     return (winners[0], False) if len(winners) == 1 else (None, True)
 
 
-def configuration(manifest, profile, parallel_games, cpu_threads, seed):
+def configuration(manifest, initial_model, parallel_games, cpu_threads, seed):
     values = {
-        "nn_file_name": manifest["models"][profile[0]],
+        "nn_file_name": initial_model,
         "program_auto_seed": "false",
         "program_seed": seed,
         "program_quiet": "true",
@@ -128,59 +128,87 @@ def stop_process(process):
             process.wait()
 
 
-def run_profile(manifest, lineup_id, profile, count, batch_size, cpu_threads,
-                gpu, stderr_path):
-    parallel_games = min(count, batch_size)
-    seed = manifest["seed"] + lineup_id * 1000003
-    command = [
-        str(manifest["executable"]), "-mode", "sp",
-        "-conf_file", str(manifest["config_file"]),
-        "-conf_str", configuration(manifest, profile, parallel_games, cpu_threads, seed),
-    ]
-    env = os.environ.copy()
-    env["CUDA_VISIBLE_DEVICES"] = str(gpu)
-    output = queue.Queue()
-    started = time.monotonic()
-    with stderr_path.open("w") as stderr:
-        process = subprocess.Popen(
+class PersistentActor:
+    """One batched actor reused across all payoff profiles in a manifest."""
+
+    def __init__(self, manifest, parallel_games, cpu_threads, gpu, stderr_path):
+        self.manifest = manifest
+        self.output = queue.Queue()
+        self.stderr = stderr_path.open("w")
+        initial_model = next(iter(manifest["models"].values()))
+        seed = manifest["seed"]
+        command = [
+            str(manifest["executable"]), "-mode", "sp",
+            "-conf_file", str(manifest["config_file"]),
+            "-conf_str", configuration(
+                manifest, initial_model, parallel_games, cpu_threads, seed
+            ),
+        ]
+        env = os.environ.copy()
+        env["CUDA_VISIBLE_DEVICES"] = str(gpu)
+        self.process = subprocess.Popen(
             command, cwd=manifest["cwd"], env=env,
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=stderr,
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.stderr,
             text=True, bufsize=1,
         )
+        self.reader = threading.Thread(target=self._read_stdout, daemon=True)
+        self.reader.start()
 
-        def read_stdout():
-            for line in process.stdout:
-                output.put(line)
-            output.put(None)
+    def _read_stdout(self):
+        for line in self.process.stdout:
+            self.output.put(line)
+        self.output.put(None)
 
-        reader = threading.Thread(target=read_stdout, daemon=True)
-        reader.start()
-        games = []
+    def write(self, commands):
+        self.process.stdin.write(commands)
+        self.process.stdin.flush()
+
+    def read(self, context):
         try:
-            paths = ",".join(manifest["models"][policy] for policy in profile)
-            process.stdin.write(
-                f"load_profile eval_{lineup_id} {','.join(profile)} "
-                f"{','.join('0' for _ in profile)} {paths}\nstart\n"
+            line = self.output.get(timeout=self.manifest["timeout"])
+        except queue.Empty as exc:
+            raise TimeoutError(
+                f"{context} produced no output for {self.manifest['timeout']} seconds"
+            ) from exc
+        if line is None:
+            raise RuntimeError(
+                f"batched actor exited with code {self.process.poll()} during {context}"
             )
-            process.stdin.flush()
-            while len(games) < count:
-                try:
-                    line = output.get(timeout=manifest["timeout"])
-                except queue.Empty as exc:
-                    raise TimeoutError(
-                        f"profile {lineup_id} produced no game for {manifest['timeout']} seconds"
-                    ) from exc
-                if line is None:
-                    raise RuntimeError(
-                        f"batched actor exited with code {process.poll()} after "
-                        f"{len(games)}/{count} games; see {stderr_path}"
-                    )
-                parsed = parse_selfplay(line, len(profile))
-                if parsed is not None:
-                    games.append(parsed)
-        finally:
-            stop_process(process)
-            reader.join(timeout=2)
+        return line
+
+    def run_profile(self, lineup_id, profile, count):
+        paths = ",".join(self.manifest["models"][policy] for policy in profile)
+        self.write(
+            f"load_profile eval_{lineup_id} {','.join(profile)} "
+            f"{','.join('0' for _ in profile)} {paths}\nstart\n"
+        )
+        games = []
+        while len(games) < count:
+            line = self.read(f"profile {lineup_id}")
+            parsed = parse_selfplay(line, len(profile))
+            if parsed is not None:
+                games.append(parsed)
+
+        # Some parallel actors may already have completed another game when
+        # the requested count is reached.  Stop and reset at the next safe CPU
+        # boundary, then drain all old-profile output up to the Sync marker.
+        token = f"profile_{lineup_id}_done"
+        self.write(f"stop\nreset_profile_actors\nsync {token}\n")
+        while True:
+            line = self.read(f"profile {lineup_id} barrier")
+            if line.rstrip("\r\n") == f"Sync {token}":
+                break
+        return games
+
+    def close(self):
+        stop_process(self.process)
+        self.reader.join(timeout=2)
+        self.stderr.close()
+
+
+def run_profile(actor, lineup_id, profile, count):
+    started = time.monotonic()
+    games = actor.run_profile(lineup_id, profile, count)
     return games, time.monotonic() - started
 
 
@@ -217,27 +245,38 @@ def run(args):
         raise RuntimeError(f"arena appears to be running: {lock_path}") from exc
 
     total = len(manifest["profiles"]) * manifest["games_per_profile"]
+    pending = []
+    for lineup_id, profile in enumerate(manifest["profiles"]):
+        first_id = lineup_id * manifest["games_per_profile"]
+        specs = [
+            (first_id + repeat, repeat)
+            for repeat in range(manifest["games_per_profile"])
+            if first_id + repeat not in completed
+        ]
+        if specs:
+            pending.append((lineup_id, profile, specs))
+
+    actor = None
     try:
+        if pending:
+            parallel_games = min(args.batch_size, max(len(specs) for _, _, specs in pending))
+            actor = PersistentActor(
+                manifest, parallel_games, args.cpu_threads, args.gpu,
+                log_dir / "persistent_actor.log",
+            )
+            print(
+                f"persistent payoff actor: GPU {args.gpu}, batch={parallel_games}, "
+                f"profiles={len(pending)}",
+                flush=True,
+            )
         with games_path.open("a") as stream:
-            for lineup_id, profile in enumerate(manifest["profiles"]):
-                first_id = lineup_id * manifest["games_per_profile"]
-                specs = [
-                    (first_id + repeat, repeat)
-                    for repeat in range(manifest["games_per_profile"])
-                    if first_id + repeat not in completed
-                ]
-                if not specs:
-                    continue
+            for pending_index, (lineup_id, profile, specs) in enumerate(pending, 1):
                 print(
-                    f"profile {lineup_id + 1}/{len(manifest['profiles'])}: "
-                    f"{'/'.join(profile)}, {len(specs)} games, batch={min(args.batch_size, len(specs))}",
+                    f"profile {pending_index}/{len(pending)}: "
+                    f"{'/'.join(profile)}, {len(specs)} games, batch={parallel_games}",
                     flush=True,
                 )
-                games, elapsed = run_profile(
-                    manifest, lineup_id, profile, len(specs), args.batch_size,
-                    args.cpu_threads, args.gpu,
-                    log_dir / f"profile_{lineup_id:04d}.log",
-                )
+                games, elapsed = run_profile(actor, lineup_id, profile, len(specs))
                 for (game_id, repeat), (returns, game_record) in zip(specs, games):
                     winner_seat, draw = result_info(returns)
                     record = {
@@ -260,6 +299,8 @@ def run(args):
                 stream.flush()
                 print(f"  completed in {elapsed:.2f}s", flush=True)
     finally:
+        if actor is not None:
+            actor.close()
         try:
             lock_path.unlink()
         except FileNotFoundError:

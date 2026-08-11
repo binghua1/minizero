@@ -294,7 +294,7 @@ void ActorGroup::handleCommand()
 
 void ActorGroup::handleCommand(const std::string& command_prefix, const std::string& command)
 {
-    if (command_prefix == "reset_actors") {
+    if (command_prefix == "reset_actors" || command_prefix == "reset_profile_actors") {
         std::cerr << "[command] " << command << std::endl;
         for (auto& actor : getSharedData()->actors_) { actor->reset(); }
         getSharedData()->do_cpu_job_ = true;
@@ -461,6 +461,14 @@ void ActorGroup::handleCommand(const std::string& command_prefix, const std::str
     } else if (command_prefix == "stop") {
         std::cerr << "[command] " << command << std::endl;
         running_ = false;
+    } else if (command_prefix == "sync") {
+        // A stdout barrier lets long-lived controller processes distinguish
+        // games emitted before a profile switch from games emitted after it.
+        // Commands are handled only at a safe CPU boundary, so every earlier
+        // self-play result has already been written when this marker appears.
+        const std::vector<std::string> args = utils::stringToVector(command);
+        if (args.size() != 2) { throw std::runtime_error("sync expects one token"); }
+        std::cout << "Sync " << args[1] << std::endl;
     } else if (command_prefix == "quit") {
         std::cerr << "[command] " << command << std::endl;
         exit(0);

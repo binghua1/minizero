@@ -128,7 +128,8 @@ tools/multiplayer-guided-pool.sh \
 
 TicTacMo/Connect3x3 default to three players and Blokus to four. Other games
 set `GUIDED_NUM_PLAYERS`. Repeating an identical command resumes the run;
-changed settings require a new run directory.
+`GUIDED_TOTAL_ITERATIONS` may be increased to extend it. Other changed settings
+require a new run directory, and the saved total cannot be decreased.
 
 ## Parameters
 
@@ -159,9 +160,9 @@ changed settings require a new run directory.
 | `GUIDED_EVAL_THREADS` | 4 | Payoff-evaluation CPU threads |
 | `GUIDED_SIMULATIONS` | 50 | Training/evaluation MCTS simulations |
 | `GUIDED_SEED` | 0 | Experiment seed |
-| `GUIDED_GPU` | 0 | Learner/default GPU |
-| `GUIDED_SELFPLAY_GPU` | learner GPU | Self-play GPU index |
-| `GUIDED_EVAL_GPU` | learner GPU | Payoff GPU index |
+| `GUIDED_GPU` | 0 | MiniZero GPU-index string; e.g. `0123` uses four GPUs |
+| `GUIDED_SELFPLAY_GPU` | `GUIDED_GPU` | One index per self-play worker |
+| `GUIDED_EVAL_GPU` | first guided GPU | Single payoff-evaluation GPU |
 | `GUIDED_PORT` | 10021 | Zero-server port |
 
 The four distribution ratios must be non-negative and sum to one. The
@@ -177,7 +178,11 @@ than the earlier five-iteration/50-game Adaptive JPSRO run.
 - `guided_after_*.tsv`: weighted plan loaded by self-play workers.
 - `guided_after_*.tsv.json`: hard/CCE/history contribution per plan row.
 - `admission_i*.json`: gains, standard errors, and admission decision.
+- `controller_state.json`: completed controller stages used for safe resume.
 
 The learner, network architecture, MCTS budget, and replay implementation are
 unchanged. Opponent games may load up to `N-1` frozen networks; profiles are
 assigned per worker and network slots are reused instead of loading per game.
+Payoff evaluation is isolated from the training server and therefore never
+adds games to its replay buffer. A single stopped/reset persistent actor is
+reused across payoff profiles to avoid repeated CUDA and process startup.

@@ -151,8 +151,12 @@ if a larger game exceeds GPU memory.
 Payoff evaluation also uses `ActorGroup`, but in an isolated evaluation-only
 process that never connects to the training server or writes replay data. All
 repeats of one ordered joint profile share loaded frozen networks and are
-evaluated in batches of up to `JPSRO_EVAL_BATCH` games. Profiles are processed
-sequentially so one GPU is not filled with several duplicate model sets. This
+evaluated in batches of up to `JPSRO_EVAL_BATCH` games. One persistent actor
+process is reused across every profile in an evaluation manifest, avoiding
+repeated process startup and CUDA initialization. At a profile boundary it is
+stopped and reset with an evaluation-only command before loading the next
+profile; already-loaded model slots are reused when paths match. Profiles remain
+sequential so one GPU is not filled with several duplicate model sets. This
 changes only execution efficiency: game counts, empirical payoffs, candidate
 admission, and the CCE certificate are unchanged. Manifests made by the older
 controller automatically fall back to the console arena when resumed.
