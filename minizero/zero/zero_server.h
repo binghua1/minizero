@@ -143,6 +143,7 @@ protected:
     std::vector<float> latest_game_returns_;
     std::vector<std::vector<float>> latest_game_player_returns_;
     std::unordered_map<int64_t, std::pair<double, int>> population_seat_return_stats_;
+    std::unordered_map<std::string, std::pair<double, int>> guided_profile_return_stats_;
     std::vector<JPSROProfile> jpsro_profiles_;
 };
 

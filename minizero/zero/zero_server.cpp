@@ -304,7 +304,7 @@ void ZeroServer::initialize()
     shared_data_.updated_conf_str_ = getUpdatedConfig();
     if (config::zero_use_jpsro) {
         if (config::zero_use_population) {
-            throw std::runtime_error("zero_use_jpsro and zero_use_population are mutually exclusive");
+            throw std::runtime_error("profile-guided training already includes history and cannot use legacy population sampling simultaneously");
         }
         jpsro_profiles_ = loadJPSROProfiles(config::zero_jpsro_profile_file);
         if (config::zero_jpsro_selfplay_ratio < 0.0f || config::zero_jpsro_selfplay_ratio > 1.0f ||
@@ -348,8 +348,11 @@ void ZeroServer::selfPlay()
         if (config::zero_use_jpsro) {
             const bool opponent_game = sp_data.game_record_.find("JI[") != std::string::npos;
             const int target_opponent_games = config::zero_num_games_per_iteration - target_plain_games;
-            if ((!opponent_game && plain_games >= target_plain_games) ||
-                (opponent_game && opponent_games >= target_opponent_games)) {
+            const bool can_enforce_mix = config::zero_jpsro_num_workers > 1 &&
+                                         target_plain_games > 0 && target_opponent_games > 0;
+            if (can_enforce_mix &&
+                ((!opponent_game && plain_games >= target_plain_games) ||
+                 (opponent_game && opponent_games >= target_opponent_games))) {
                 continue;
             }
             opponent_game ? ++opponent_games : ++plain_games;
@@ -360,6 +363,29 @@ void ZeroServer::selfPlay()
         ++num_collect_game;
         total_data_length += sp_data.data_length_;
         if (sp_data.is_terminal_ && config::zero_use_population) { recordPopulationResult(sp_data); }
+        if (sp_data.is_terminal_ && config::zero_use_jpsro) {
+            EnvironmentLoader env_loader;
+            if (env_loader.loadFromString(sp_data.game_record_)) {
+                const std::string profile_id = env_loader.getTag("JI");
+                std::istringstream mask_stream(env_loader.getTag("TM"));
+                std::string token;
+                int player = 0;
+                int count = 0;
+                double total = 0.0;
+                while (std::getline(mask_stream, token, ',')) {
+                    if (token == "1" && player < static_cast<int>(sp_data.returns_.size())) {
+                        total += sp_data.returns_[player];
+                        ++count;
+                    }
+                    ++player;
+                }
+                if (!profile_id.empty() && count > 0) {
+                    auto& stat = guided_profile_return_stats_[profile_id];
+                    stat.first += total / count;
+                    ++stat.second;
+                }
+            }
+        }
         if (sp_data.is_terminal_) {
             game_lengths.push_back(sp_data.game_length_);
             if (sp_data.returns_.size() > 1) {
@@ -403,6 +429,14 @@ void ZeroServer::selfPlay()
             shared_data_.logger_.addTrainingLog(
                 "[Population Cumulative Avg. Return] opponent=" + std::to_string(historical_iteration) +
                 " current_seats=" + std::to_string(num_current) +
+                " games=" + std::to_string(item.second.second) +
+                " return=" + std::to_string(item.second.first / item.second.second));
+        }
+    }
+    if (config::zero_use_jpsro) {
+        for (const auto& item : guided_profile_return_stats_) {
+            shared_data_.logger_.addTrainingLog(
+                "[Guided Pool Avg. Current Return] profile=" + item.first +
                 " games=" + std::to_string(item.second.second) +
                 " return=" + std::to_string(item.second.first / item.second.second));
         }

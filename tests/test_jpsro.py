@@ -9,8 +9,9 @@ from pathlib import Path
 from minizero.jpsro.meta_solver import cce_gap, solve_cce
 from minizero.jpsro.state import JPSROState, PayoffTable
 from minizero.jpsro.workflow import (
-    admit_candidate, candidate_deviation_gains, create_evaluation_manifest, create_oracle_profiles, ingest_evaluation,
-    write_oracle_plan,
+    admit_candidate, candidate_deviation_gains, create_evaluation_manifest,
+    create_guided_profiles, create_oracle_profiles, ingest_evaluation, prune_population,
+    write_guided_plan, write_oracle_plan,
 )
 
 
@@ -98,6 +99,51 @@ class JPSROTest(unittest.TestCase):
             write_oracle_plan(state, plan)
             self.assertEqual(plan.read_text().count("CURRENT"), 6)  # ID and path per row.
 
+    def test_guided_plan_supports_one_and_two_current_seats(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = JPSROState.create(directory, 3, shared_pool=True)
+            model = Path(directory) / "p0.pt"
+            model.touch()
+            state.add_policy("p0", model)
+            state._write_json("meta_strategy.json", {
+                "distribution": [{"profile": ["p0", "p0", "p0"], "probability": 1.0}]
+            })
+            rows = create_guided_profiles(
+                state, hard_ratio=0.6, cce_ratio=0.1, history_ratio=0.15,
+                current_seat_min=1, current_seat_max=2,
+            )
+            self.assertEqual({sum(row["mask"]) for row in rows}, {1, 2})
+            self.assertAlmostEqual(sum(row["weight"] for row in rows), 0.85)
+            plan = Path(directory) / "guided.tsv"
+            write_guided_plan(state, plan, current_seat_min=1, current_seat_max=2)
+            self.assertTrue(plan.is_file())
+            self.assertTrue(plan.with_suffix(".tsv.json").is_file())
+
+    def test_guided_hard_sampling_prefers_low_candidate_return(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = JPSROState.create(directory, 2, shared_pool=True)
+            for policy_id in ("easy", "hard", "candidate"):
+                model = Path(directory) / f"{policy_id}.pt"
+                model.touch()
+                state.add_policy(policy_id, model)
+            state._write_json("meta_strategy.json", {"distribution": [
+                {"profile": ["easy", "easy"], "probability": 0.5},
+                {"profile": ["hard", "hard"], "probability": 0.5},
+            ]})
+            for _ in range(4):
+                state.payoffs.add(("candidate", "easy"), (1.0, -1.0))
+                state.payoffs.add(("candidate", "hard"), (-1.0, 1.0))
+                state.payoffs.add(("easy", "candidate"), (-1.0, 1.0))
+                state.payoffs.add(("hard", "candidate"), (1.0, -1.0))
+            rows = create_guided_profiles(
+                state, candidate_id="candidate", hard_ratio=1.0,
+                cce_ratio=0.0, history_ratio=0.0, temperature=0.2,
+                current_seat_min=1, current_seat_max=1,
+            )
+            weights = {tuple(row["profile"]): row["weight"] for row in rows}
+            self.assertGreater(weights[("CURRENT", "hard")],
+                               weights[("CURRENT", "easy")])
+
     def test_fixed_manifest_ingestion(self):
         with tempfile.TemporaryDirectory() as directory:
             state = JPSROState.create(Path(directory) / "state", 2, shared_pool=True)
@@ -138,6 +184,20 @@ class JPSROTest(unittest.TestCase):
             self.assertTrue(decision["accepted"])
             self.assertEqual(decision["eligible_players"], [1])
             self.assertEqual(state.policy_sets(), [["p0"], ["p0", "p1"]])
+
+    def test_population_prune_preserves_cce_support(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = JPSROState.create(directory, 3, shared_pool=True)
+            for generation in range(4):
+                model = Path(directory) / f"p{generation}.pt"
+                model.touch()
+                state.add_policy(f"p{generation}", model, generation=generation)
+            state._write_json("meta_strategy.json", {
+                "distribution": [{"profile": ["p0", "p1", "p0"], "probability": 1.0}]
+            })
+            removed = prune_population(state, 3)
+            self.assertEqual(set(state.policies), {"p0", "p1", "p3"})
+            self.assertEqual(removed, ["p2"])
 
 
 if __name__ == "__main__":

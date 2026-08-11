@@ -264,3 +264,6 @@ zero_actor_intermediate_sequence_length=0
 ```
 
 Unsupported combinations fail at startup instead of silently using two-player semantics. Multiplayer MuZero, Gumbel search, resignation, categorical values, prioritized replay, and intermediate self-play sequences are intentionally deferred.
+
+For the single-model hard/CCE/history training framework, formulas, guarantees,
+parameters, and commands, see [GuidedOpponentPool.md](GuidedOpponentPool.md).

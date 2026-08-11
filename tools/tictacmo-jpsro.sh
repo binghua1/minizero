@@ -9,14 +9,14 @@ usage() {
     cat <<'EOF'
 Usage:
   tools/tictacmo-jpsro.sh RUN_DIR CONFIG.cfg
-  tools/multiplayer-jpsro.sh GAME RUN_DIR CONFIG.cfg
+  tools/multiplayer-guided-pool.sh GAME RUN_DIR CONFIG.cfg
 
-Train one from-scratch Adaptive JPSRO-guided AlphaZero run. Normal all-seat
-self-play preserves AlphaZero data efficiency; the remaining workers train
-against CCE-selected joint opponents. Candidates are tested every oracle
-interval and enter only the player pools where their lower-confidence gain is
-positive. GAME currently supports tictacmo and connect3x3. Re-running the same
-command resumes an interrupted run.
+Train one from-scratch JPSRO-guided opponent-pool run. A single CURRENT model
+learns from role-balanced hard, CCE and historical joint profiles, plus a small
+amount of all-CURRENT self-play. Candidates enter the certified frozen pool only
+when their lower-confidence deviation gain is positive. TicTacMo/Connect3x3
+default to three players and Blokus to four; other games set GUIDED_NUM_PLAYERS.
+Re-running the same command resumes an interrupted run.
 EOF
 }
 
@@ -106,7 +106,11 @@ freeze_policy() {
 
 solve_meta() {
     local label=$1
+    local protect=${2:-}
     python3 tools/jpsro.py solve "$meta_dir" --min-games "$eval_games" --tolerance "$tolerance"
+    local prune_args=(python3 tools/jpsro.py prune "$meta_dir" --maximum "$population_size")
+    [[ -n "$protect" ]] && prune_args+=(--protect "$protect")
+    "${prune_args[@]}"
     cp "$meta_dir/meta_strategy.json" "$meta_dir/meta_strategy_${label}.json"
 }
 
@@ -119,46 +123,76 @@ else
     usage
     exit 2
 fi
-[[ "$game" == tictacmo || "$game" == connect3x3 ]] || die "GAME must be tictacmo or connect3x3"
+[[ "$game" =~ ^[a-z0-9_]+$ ]] || die "invalid GAME name"
 run_dir=$(readlink -m "$1")
 source_config=$(readlink -f "$2")
 [[ -f "$source_config" ]] || die "config not found: $2"
+if [[ -n ${GUIDED_NUM_PLAYERS:-} ]]; then
+    num_players=$GUIDED_NUM_PLAYERS
+elif [[ "$game" == tictacmo || "$game" == connect3x3 ]]; then
+    num_players=3
+elif [[ "$game" == blokus* ]]; then
+    num_players=4
+else
+    die "set GUIDED_NUM_PLAYERS for $game"
+fi
+[[ "$num_players" =~ ^[3-6]$ ]] || die "GUIDED_NUM_PLAYERS must be between 3 and 6"
+current_seat_min=${GUIDED_CURRENT_SEAT_MIN:-1}
+current_seat_max=${GUIDED_CURRENT_SEAT_MAX:-$((num_players - 1))}
+[[ "$current_seat_min" =~ ^[1-9][0-9]*$ && "$current_seat_max" =~ ^[1-9][0-9]*$ ]] || die "guided seat limits must be positive integers"
+(( current_seat_min <= current_seat_max && current_seat_max < num_players )) || die "guided seat limits must satisfy 1 <= min <= max < players"
 case "$run_dir" in
     "$repo_root"/*) ;;
     *) die "RUN_DIR must be inside $repo_root" ;;
 esac
 [[ "$run_dir" != *[,:[:space:]]* ]] || die "RUN_DIR cannot contain spaces, commas, or colons"
 
-gpu=${JPSRO_GPU:-0}
-bootstrap_iterations=${JPSRO_BOOTSTRAP_ITERATIONS:-5}
-oracle_interval=${JPSRO_ORACLE_INTERVAL:-5}
-total_iterations=${JPSRO_TOTAL_ITERATIONS:-30}
-games=${JPSRO_GAMES_PER_ITERATION:-2000}
-training_steps=${JPSRO_TRAINING_STEPS:-500}
-learner_batch=${JPSRO_LEARNER_BATCH:-1024}
-selfplay_workers=${JPSRO_SELFPLAY_WORKERS:-4}
-selfplay_batch=${JPSRO_SELFPLAY_BATCH:-64}
-selfplay_ratio=${JPSRO_SELFPLAY_RATIO:-0.7}
-cpu_threads=${JPSRO_CPU_THREADS:-4}
-eval_games=${JPSRO_EVAL_GAMES:-20}
-eval_batch=${JPSRO_EVAL_BATCH:-64}
-eval_threads=${JPSRO_EVAL_THREADS:-4}
-eval_noise=${JPSRO_EVAL_NOISE:-true}
-simulations=${JPSRO_SIMULATIONS:-50}
-seed=${JPSRO_SEED:-0}
-tolerance=${JPSRO_TOLERANCE:-0.01}
-admission_gain=${JPSRO_ADMISSION_GAIN:-0.02}
-admission_confidence=${JPSRO_ADMISSION_CONFIDENCE:-2.0}
-port=${JPSRO_PORT:-10021}
+gpu=${GUIDED_GPU:-${JPSRO_GPU:-0}}
+bootstrap_iterations=${GUIDED_BOOTSTRAP_ITERATIONS:-${JPSRO_BOOTSTRAP_ITERATIONS:-10}}
+oracle_interval=${GUIDED_META_INTERVAL:-${JPSRO_ORACLE_INTERVAL:-10}}
+total_iterations=${GUIDED_TOTAL_ITERATIONS:-${JPSRO_TOTAL_ITERATIONS:-30}}
+games=${GUIDED_GAMES_PER_ITERATION:-${JPSRO_GAMES_PER_ITERATION:-2000}}
+training_steps=${GUIDED_TRAINING_STEPS:-${JPSRO_TRAINING_STEPS:-500}}
+learner_batch=${GUIDED_LEARNER_BATCH:-${JPSRO_LEARNER_BATCH:-1024}}
+selfplay_workers=${GUIDED_SELFPLAY_WORKERS:-${JPSRO_SELFPLAY_WORKERS:-4}}
+selfplay_batch=${GUIDED_SELFPLAY_BATCH:-${JPSRO_SELFPLAY_BATCH:-64}}
+selfplay_ratio=${GUIDED_CURRENT_RATIO:-0.15}
+hard_ratio=${GUIDED_HARD_RATIO:-0.60}
+cce_ratio=${GUIDED_CCE_RATIO:-0.10}
+history_ratio=${GUIDED_HISTORY_RATIO:-0.15}
+population_size=${GUIDED_POPULATION_SIZE:-8}
+hard_temperature=${GUIDED_HARD_TEMPERATURE:-0.20}
+hard_confidence=${GUIDED_HARD_CONFIDENCE:-1.0}
+cpu_threads=${GUIDED_CPU_THREADS:-${JPSRO_CPU_THREADS:-4}}
+eval_games=${GUIDED_EVAL_GAMES:-${JPSRO_EVAL_GAMES:-20}}
+eval_batch=${GUIDED_EVAL_BATCH:-${JPSRO_EVAL_BATCH:-64}}
+eval_threads=${GUIDED_EVAL_THREADS:-${JPSRO_EVAL_THREADS:-4}}
+eval_noise=${GUIDED_EVAL_NOISE:-${JPSRO_EVAL_NOISE:-true}}
+simulations=${GUIDED_SIMULATIONS:-${JPSRO_SIMULATIONS:-50}}
+seed=${GUIDED_SEED:-${JPSRO_SEED:-0}}
+tolerance=${GUIDED_TOLERANCE:-${JPSRO_TOLERANCE:-0.01}}
+admission_gain=${GUIDED_ADMISSION_GAIN:-${JPSRO_ADMISSION_GAIN:-0.02}}
+admission_confidence=${GUIDED_ADMISSION_CONFIDENCE:-${JPSRO_ADMISSION_CONFIDENCE:-2.0}}
+port=${GUIDED_PORT:-${JPSRO_PORT:-10021}}
 
-for value in "$bootstrap_iterations" "$oracle_interval" "$total_iterations" "$selfplay_workers" "$selfplay_batch" "$eval_batch" "$eval_threads"; do
+for value in "$bootstrap_iterations" "$oracle_interval" "$total_iterations" "$games" "$training_steps" "$learner_batch" "$selfplay_workers" "$selfplay_batch" "$cpu_threads" "$eval_games" "$eval_batch" "$eval_threads" "$simulations" "$population_size"; do
     [[ "$value" =~ ^[1-9][0-9]*$ ]] || die "iteration and self-play parallelism settings must be positive integers"
 done
 (( bootstrap_iterations < total_iterations )) || die "bootstrap iterations must be below total iterations"
-python3 -c 'import sys; value=float(sys.argv[1]); assert 0 <= value <= 1' "$selfplay_ratio" || die "JPSRO_SELFPLAY_RATIO must be between 0 and 1"
-worker_gpu=${JPSRO_SELFPLAY_GPU:-$gpu}
+python3 - "$selfplay_ratio" "$hard_ratio" "$cce_ratio" "$history_ratio" <<'PY' || die "guided ratios must be non-negative and sum to 1"
+import sys
+values = [float(value) for value in sys.argv[1:]]
+assert all(value >= 0 for value in values)
+assert abs(sum(values) - 1.0) <= 1e-6
+PY
+python3 - "$hard_temperature" "$hard_confidence" <<'PY' || die "hard temperature must be positive and confidence non-negative"
+import sys
+assert float(sys.argv[1]) > 0
+assert float(sys.argv[2]) >= 0
+PY
+worker_gpu=${GUIDED_SELFPLAY_GPU:-${JPSRO_SELFPLAY_GPU:-$gpu}}
 [[ "$worker_gpu" =~ ^[0-9]$ ]] || die "JPSRO_SELFPLAY_GPU must be one GPU index"
-eval_gpu=${JPSRO_EVAL_GPU:-$gpu}
+eval_gpu=${GUIDED_EVAL_GPU:-${JPSRO_EVAL_GPU:-$gpu}}
 [[ "$eval_gpu" =~ ^[0-9]$ ]] || die "JPSRO_EVAL_GPU must be one GPU index"
 sp_gpu=""
 for ((worker = 0; worker < selfplay_workers; ++worker)); do sp_gpu+="$worker_gpu"; done
@@ -168,51 +202,62 @@ training_dir="$run_dir/training"
 meta_dir="$run_dir/meta"
 frozen_dir="$run_dir/frozen"
 executable="$repo_root/build/$game/minizero_$game"
-settings_file="$run_dir/adaptive_jpsro.settings"
-legacy_settings="version=2 bootstrap=$bootstrap_iterations interval=$oracle_interval total=$total_iterations games=$games steps=$training_steps learner_batch=$learner_batch selfplay_workers=$selfplay_workers selfplay_batch=$selfplay_batch selfplay_ratio=$selfplay_ratio cpu_threads=$cpu_threads eval_games=$eval_games eval_noise=$eval_noise simulations=$simulations seed=$seed admission_gain=$admission_gain admission_confidence=$admission_confidence"
-settings="game=$game $legacy_settings"
-common_conf="zero_use_population=false:zero_jpsro_selfplay_ratio=$selfplay_ratio:zero_jpsro_num_workers=$selfplay_workers:zero_disable_resign_ratio=1:zero_num_games_per_iteration=$games:learner_training_step=$training_steps:learner_batch_size=$learner_batch:actor_num_simulation=$simulations:program_auto_seed=false:program_seed=$seed"
+settings_file="$run_dir/guided_pool.settings"
+settings="version=1 game=$game players=$num_players seats=$current_seat_min-$current_seat_max bootstrap=$bootstrap_iterations interval=$oracle_interval total=$total_iterations games=$games steps=$training_steps learner_batch=$learner_batch selfplay_workers=$selfplay_workers selfplay_batch=$selfplay_batch current_ratio=$selfplay_ratio hard_ratio=$hard_ratio cce_ratio=$cce_ratio history_ratio=$history_ratio population_size=$population_size hard_temperature=$hard_temperature hard_confidence=$hard_confidence cpu_threads=$cpu_threads eval_games=$eval_games eval_noise=$eval_noise simulations=$simulations seed=$seed admission_gain=$admission_gain admission_confidence=$admission_confidence"
+common_conf="zero_use_population=false:zero_jpsro_selfplay_ratio=$selfplay_ratio:zero_jpsro_num_workers=$selfplay_workers:zero_population_current_seat_min=$current_seat_min:zero_population_current_seat_max=$current_seat_max:zero_population_balance_seats=true:zero_disable_resign_ratio=1:zero_num_games_per_iteration=$games:learner_training_step=$training_steps:learner_batch_size=$learner_batch:actor_num_simulation=$simulations:program_auto_seed=false:program_seed=$seed"
 
 mkdir -p "$run_dir" "$frozen_dir"
-[[ ! -f "$run_dir/budgeted_jpsro.settings" ]] || die "old fixed-JPSRO run detected; use a new RUN_DIR for the adaptive method"
 if [[ -f "$settings_file" ]]; then
     saved_settings=$(<"$settings_file")
-    [[ "$saved_settings" == "$settings" || ( "$game" == tictacmo && "$saved_settings" == "$legacy_settings" ) ]] || \
-        die "resume settings differ from $settings_file"
+    [[ "$saved_settings" == "$settings" ]] || die "resume settings differ from $settings_file"
 else
     echo "$settings" > "$settings_file"
 fi
 [[ -f "$config" ]] || cp "$source_config" "$config"
 
-# p0 is a short in-run bootstrap, never an external AlphaZero warm start.
+# p0 is the first checkpoint of this same from-scratch run, not an external warm start.
 train_to "$bootstrap_iterations"
 if [[ ! -f "$run_dir/.generation_0_complete" ]]; then
-    [[ -d "$meta_dir" ]] || python3 tools/jpsro.py init "$meta_dir" --players 3 --shared-pool
+    [[ -d "$meta_dir" ]] || python3 tools/jpsro.py init "$meta_dir" --players "$num_players" --shared-pool
     freeze_policy p0 0
     evaluate_profiles "$run_dir/eval_g0_full"
     solve_meta g0
+    python3 tools/jpsro.py guided-plan "$meta_dir" "$run_dir/guided_after_${bootstrap_iterations}.tsv" \
+        --hard-ratio "$hard_ratio" --cce-ratio "$cce_ratio" --history-ratio "$history_ratio" \
+        --temperature "$hard_temperature" --confidence "$hard_confidence" \
+        --current-seat-min "$current_seat_min" --current-seat-max "$current_seat_max"
     touch "$run_dir/.generation_0_complete"
 fi
 
 end_iteration=$bootstrap_iterations
 while (( end_iteration < total_iterations )); do
+    previous_iteration=$end_iteration
     end_iteration=$((end_iteration + oracle_interval))
     (( end_iteration > total_iterations )) && end_iteration=$total_iterations
     marker="$run_dir/.candidate_${end_iteration}_complete"
     [[ -f "$marker" ]] && continue
     candidate="p$end_iteration"
-    profile_file="$run_dir/oracle_i${end_iteration}.tsv"
-    python3 tools/jpsro.py oracle-plan "$meta_dir" "$profile_file" --responders all
+    profile_file="$run_dir/guided_after_${previous_iteration}.tsv"
+    [[ -f "$profile_file" ]] || die "missing guided plan: $profile_file"
     train_to "$end_iteration" "$profile_file"
 
     freeze_policy "$candidate" "$end_iteration"
     evaluate_profiles "$run_dir/eval_i${end_iteration}_deviation" "$candidate"
+    next_profile="$run_dir/guided_after_${end_iteration}.tsv"
+    python3 tools/jpsro.py guided-plan "$meta_dir" "$next_profile" --candidate "$candidate" \
+        --hard-ratio "$hard_ratio" --cce-ratio "$cce_ratio" --history-ratio "$history_ratio" \
+        --temperature "$hard_temperature" --confidence "$hard_confidence" \
+        --current-seat-min "$current_seat_min" --current-seat-max "$current_seat_max"
     decision="$run_dir/admission_i${end_iteration}.json"
     python3 tools/jpsro.py admit-candidate "$meta_dir" "$candidate" \
         --min-gain "$admission_gain" --confidence "$admission_confidence" --output "$decision"
     if [[ $(python3 -c 'import json,sys; print(str(json.load(open(sys.argv[1]))["accepted"]).lower())' "$decision") == true ]]; then
         evaluate_profiles "$run_dir/eval_i${end_iteration}_full"
-        solve_meta "i$end_iteration"
+        solve_meta "i$end_iteration" "$candidate"
+        python3 tools/jpsro.py guided-plan "$meta_dir" "$next_profile" --candidate "$candidate" \
+            --hard-ratio "$hard_ratio" --cce-ratio "$cce_ratio" --history-ratio "$history_ratio" \
+            --temperature "$hard_temperature" --confidence "$hard_confidence" \
+            --current-seat-min "$current_seat_min" --current-seat-max "$current_seat_max"
     else
         rm -f "$frozen_dir/$candidate.pt"
         echo "candidate $candidate rejected; continuing with the certified pool"
@@ -222,4 +267,5 @@ done
 
 echo "training complete: $training_dir"
 echo "latest single model: $(latest_model)"
-echo "population CCE: $meta_dir/meta_strategy.json"
+echo "certified population CCE: $meta_dir/meta_strategy.json"
+echo "last guided distribution: $run_dir/guided_after_${total_iterations}.tsv.json"

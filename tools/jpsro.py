@@ -20,7 +20,9 @@ atomic_json = _workflow.atomic_json
 candidate_deviation_gains = _workflow.candidate_deviation_gains
 admit_candidate = _workflow.admit_candidate
 create_evaluation_manifest = _workflow.create_evaluation_manifest
+write_guided_plan = _workflow.write_guided_plan
 ingest_evaluation = _workflow.ingest_evaluation
+prune_population = _workflow.prune_population
 required_deviation_profiles = _workflow.required_deviation_profiles
 write_oracle_plan = _workflow.write_oracle_plan
 
@@ -100,6 +102,19 @@ def command_oracle_plan(args):
     print(f"wrote {count} one-responder profiles to {Path(args.output).resolve()}")
 
 
+def command_guided_plan(args):
+    state = JPSROState.load(args.run_dir)
+    count = write_guided_plan(
+        state, args.output, candidate_id=args.candidate,
+        hard_ratio=args.hard_ratio, cce_ratio=args.cce_ratio,
+        history_ratio=args.history_ratio, temperature=args.temperature,
+        confidence=args.confidence, current_seat_min=args.current_seat_min,
+        current_seat_max=args.current_seat_max,
+        balance_seats=not args.no_balance_seats,
+    )
+    print(f"wrote {count} guided profiles to {Path(args.output).resolve()}")
+
+
 def command_deviation_gap(args):
     state = JPSROState.load(args.run_dir)
     gains = candidate_deviation_gains(state, args.candidate)
@@ -108,6 +123,14 @@ def command_deviation_gap(args):
         "max_gain": max(item["gain"] for item in gains),
         "per_player": gains,
     }, indent=2))
+
+
+def command_prune(args):
+    state = JPSROState.load(args.run_dir)
+    protected = [item for item in args.protect.split(",") if item]
+    removed = prune_population(state, args.maximum, protected)
+    print(json.dumps({"maximum": args.maximum, "removed": removed,
+                      "remaining": len(state.policies)}, indent=2))
 
 
 def command_admit_candidate(args):
@@ -195,10 +218,30 @@ def build_parser():
     item.add_argument("--response-id", default="CURRENT")
     item.set_defaults(func=command_oracle_plan)
 
+    item = subparsers.add_parser("guided-plan", help="mix hard, CCE and history opponent profiles")
+    item.add_argument("run_dir")
+    item.add_argument("output")
+    item.add_argument("--candidate", help="registered CURRENT checkpoint used to score hardness")
+    item.add_argument("--hard-ratio", type=float, default=0.6)
+    item.add_argument("--cce-ratio", type=float, default=0.1)
+    item.add_argument("--history-ratio", type=float, default=0.15)
+    item.add_argument("--temperature", type=float, default=0.2)
+    item.add_argument("--confidence", type=float, default=1.0)
+    item.add_argument("--current-seat-min", type=int, default=1)
+    item.add_argument("--current-seat-max", type=int)
+    item.add_argument("--no-balance-seats", action="store_true")
+    item.set_defaults(func=command_guided_plan)
+
     item = subparsers.add_parser("deviation-gap", help="measure a candidate oracle's gain against the previous CCE")
     item.add_argument("run_dir")
     item.add_argument("candidate")
     item.set_defaults(func=command_deviation_gap)
+
+    item = subparsers.add_parser("prune", help="soft-cap population while preserving CCE support")
+    item.add_argument("run_dir")
+    item.add_argument("--maximum", type=int, required=True)
+    item.add_argument("--protect", default="", help="comma-separated policies that cannot be pruned")
+    item.set_defaults(func=command_prune)
 
     item = subparsers.add_parser(
         "admit-candidate",

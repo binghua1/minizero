@@ -252,7 +252,7 @@ void ActorGroup::createActors()
     if (config::zero_use_jpsro) {
         const int num_players = getSharedData()->actors_.front()->getEnvironment().getNumPlayer();
         if (config::zero_use_population) {
-            throw std::runtime_error("zero_use_jpsro and zero_use_population are mutually exclusive");
+            throw std::runtime_error("profile-guided training already includes history and cannot use legacy population sampling simultaneously");
         }
         if (num_players <= 2 || config::nn_type_name != "alphazero" || config::zero_jpsro_profile_file.empty()) {
             throw std::runtime_error("JPSRO training requires a multiplayer AlphaZero environment and a profile file");

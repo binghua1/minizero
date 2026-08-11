@@ -239,11 +239,14 @@ void ZeroActor::setPolicyProfile(const std::string& profile_id,
         throw std::runtime_error("JPSRO profile must specify every player seat");
     }
     const int num_trainable = std::count(trainable_seats.begin(), trainable_seats.end(), true);
-    if ((!config::zero_jpsro_eval_only && num_trainable != 1) ||
+    const int min_trainable = std::clamp(config::zero_population_current_seat_min, 1, num_players - 1);
+    const int max_trainable = std::clamp(config::zero_population_current_seat_max, min_trainable, num_players - 1);
+    if ((!config::zero_jpsro_eval_only &&
+         (num_trainable < min_trainable || num_trainable > max_trainable)) ||
         (config::zero_jpsro_eval_only && num_trainable != 0)) {
         throw std::runtime_error(config::zero_jpsro_eval_only
                                      ? "JPSRO evaluation profile must have no trainable seats"
-                                     : "JPSRO oracle profile must have exactly one trainable responder seat");
+                                     : "guided profile trainable-seat count is outside the configured range");
     }
     if (std::any_of(networks.begin(), networks.end(), [](const auto& network) { return !network; })) {
         throw std::runtime_error("JPSRO profile contains a missing network");
