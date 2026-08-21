@@ -51,6 +51,13 @@ int main()
     assert(zero::calculateJPSROPlainCount(4, 0.0f) == 0);
     assert(zero::calculateJPSROPlainCount(4, 1.0f) == 4);
     assert(zero::calculateJPSROPlainCount(64, 0.7f) == 45);
+    double dispatch_credit = 0.0;
+    int scheduled_plain = 0;
+    for (int i = 0; i < 10; ++i) {
+        scheduled_plain += zero::scheduleJPSROPlain(0.6f, dispatch_credit) ? 1 : 0;
+    }
+    assert(scheduled_plain == 6);
+    assert(std::abs(dispatch_credit) < 1e-5);
 
     const std::filesystem::path profile_path =
         std::filesystem::temp_directory_path() / "minizero_jpsro_profile_test.tsv";

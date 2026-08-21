@@ -179,7 +179,12 @@ def create_guided_profiles(state, candidate_id=None, hard_ratio=0.6,
     if any(value < 0 for value in ratios) or sum(ratios) <= 0:
         raise ValueError("guided profile ratios must be non-negative with positive total")
     if candidate_id is not None and candidate_id not in state.policies:
-        raise ValueError(f"unknown guided candidate: {candidate_id}")
+        has_candidate_payoff = any(
+            candidate_id in entry.get("profile", [])
+            for entry in state.payoffs.entries.values()
+        )
+        if not has_candidate_payoff:
+            raise ValueError(f"unknown guided candidate: {candidate_id}")
     meta = state.load_meta_strategy()
     support = [(tuple(item["profile"]), float(item["probability"]))
                for item in meta["distribution"] if float(item["probability"]) > 0]
@@ -206,6 +211,28 @@ def create_guided_profiles(state, candidate_id=None, hard_ratio=0.6,
         for mask, mask_probability in masks:
             add("cce", frozen, mask, ratios[1] * probability * mask_probability)
 
+    # Compare a candidate with its own expected return at the same seat.
+    # Absolute returns are not comparable across asymmetric seats (for
+    # example, later Blokus seats have a lower unconditional return), and
+    # otherwise the hard sampler mistakes seat disadvantage for an opponent
+    # profile that is strategically difficult.
+    seat_return_sum = [0.0] * state.num_players
+    seat_probability = [0.0] * state.num_players
+    if candidate_id is not None:
+        for frozen, probability in support:
+            for player in range(state.num_players):
+                deviated = list(frozen)
+                deviated[player] = candidate_id
+                entry = state.payoffs.get(tuple(deviated))
+                if not entry:
+                    continue
+                seat_return_sum[player] += probability * float(entry["mean"][player])
+                seat_probability[player] += probability
+    seat_baseline = [
+        total / probability if probability > 0 else None
+        for total, probability in zip(seat_return_sum, seat_probability)
+    ]
+
     hard_items = []
     for frozen, probability in support:
         for mask, mask_probability in masks:
@@ -221,7 +248,11 @@ def create_guided_profiles(state, candidate_id=None, hard_ratio=0.6,
                         continue
                     error = state.payoffs.stderr(tuple(deviated))[player]
                     exploration = confidence * error if math.isfinite(error) else 0.0
-                    estimates.append(-float(entry["mean"][player]) + exploration)
+                    baseline = seat_baseline[player]
+                    if baseline is None:
+                        continue
+                    estimates.append(
+                        baseline - float(entry["mean"][player]) + exploration)
             hardness = sum(estimates) / len(estimates) if estimates else 0.0
             hard_items.append(((frozen, mask), hardness, probability * mask_probability))
     for (frozen, mask), probability in _softmax_weighted(hard_items, temperature):
@@ -325,25 +356,39 @@ def candidate_deviation_gains(state, candidate_id):
     return result
 
 
-def admit_candidate(state, candidate_id, min_gain=0.02, confidence=2.0):
+def admit_candidate(state, candidate_id, min_gain=0.02, confidence=2.0,
+                    max_regression=None, promote_all_players=False):
     """Keep a candidate only in player pools with positive lower-bound gain."""
     gains = candidate_deviation_gains(state, candidate_id)
     eligible = [
         item["player"] for item in gains
         if item["gain"] - confidence * item["standard_error"] > min_gain
     ]
+    regression_ok = (
+        max_regression is None or
+        all(item["gain"] >= -float(max_regression) for item in gains)
+    )
+    accepted = bool(eligible) and regression_ok
+    admitted_players = list(range(state.num_players)) if accepted and promote_all_players else eligible
     result = {
         "candidate": candidate_id,
-        "accepted": bool(eligible),
+        "accepted": accepted,
         "eligible_players": eligible,
+        "admitted_players": admitted_players if accepted else [],
         "confidence_multiplier": confidence,
         "minimum_gain": min_gain,
+        "maximum_seat_regression": max_regression,
+        "regression_check_passed": regression_ok,
+        "promote_all_players": bool(promote_all_players),
         "per_player": gains,
     }
-    if eligible:
-        state.set_policy_players(candidate_id, eligible, {"admission": result})
+    if accepted:
+        state.set_policy_players(candidate_id, admitted_players, {"admission": result})
     else:
-        state.remove_policy(candidate_id)
+        # Retain deviation observations so the next guided plan can still use
+        # the rejected oracle to score which certified profiles were hard. The
+        # policy itself is removed and therefore can never be sampled.
+        state.remove_policy(candidate_id, keep_payoffs=True)
     return result
 
 
@@ -371,6 +416,67 @@ def prune_population(state, maximum, protected=()):
             state.remove_policy(policy_id)
             removed.append(policy_id)
     return removed
+
+
+def hard_prune_population(state, maximum, protected=()):
+    """Cap the active registry by average CCE marginal mass.
+
+    Unlike ``prune_population``, this intentionally permits removal of
+    low-mass policies that still occur in the previous CCE support. Frozen
+    model files and archived payoff entries are retained; only the active
+    policy registry is reduced. The caller must solve a new restricted game
+    immediately after pruning because the previous meta-strategy may mention
+    archived policies.
+    """
+    maximum = int(maximum)
+    if maximum < 1:
+        raise ValueError("population maximum must be positive")
+    protected = set(protected)
+    unknown = protected.difference(state.policies)
+    if unknown:
+        raise ValueError(f"cannot protect unknown policies: {sorted(unknown)}")
+    if len(protected) > maximum:
+        raise ValueError("protected policies exceed the hard population maximum")
+
+    meta = state.load_meta_strategy()
+    marginals = meta.get("marginals") or state.marginals(meta["distribution"])
+    mass = {policy_id: 0.0 for policy_id in state.policies}
+    for player_marginal in marginals:
+        for policy_id, probability in player_marginal.items():
+            if policy_id in mass:
+                mass[policy_id] += float(probability) / state.num_players
+
+    ranked = sorted(
+        (policy for policy in state.policies.values()
+         if policy.policy_id not in protected),
+        key=lambda policy: (-mass[policy.policy_id], -policy.generation,
+                            policy.policy_id),
+    )
+    keep = protected.union(
+        policy.policy_id for policy in ranked[:maximum - len(protected)]
+    )
+    removed = [policy_id for policy_id in state.policies if policy_id not in keep]
+    removed_rows = [
+        {"policy": policy_id, "average_marginal_mass": mass[policy_id],
+         "generation": state.policies[policy_id].generation,
+         "model_path": state.policies[policy_id].model_path,
+         "players": list(state.policies[policy_id].players)}
+        for policy_id in removed
+    ]
+    kept_rows = [
+        {"policy": policy_id, "average_marginal_mass": mass[policy_id],
+         "generation": state.policies[policy_id].generation,
+         "protected": policy_id in protected}
+        for policy_id in state.policies if policy_id in keep
+    ]
+    # Bulk mutation avoids rewriting a potentially large payoff archive once
+    # per removed policy. Payoffs remain available for offline analysis.
+    state.policies = {
+        policy_id: policy for policy_id, policy in state.policies.items()
+        if policy_id in keep
+    }
+    state.save()
+    return {"maximum": maximum, "kept": kept_rows, "removed": removed_rows}
 
 
 def atomic_json(path, value):

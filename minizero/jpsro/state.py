@@ -191,14 +191,15 @@ class JPSROState:
             policy, players=players, metadata=merged_metadata)
         self.save()
 
-    def remove_policy(self, policy_id):
+    def remove_policy(self, policy_id, keep_payoffs=False):
         if policy_id not in self.policies:
             raise ValueError(f"unknown policy: {policy_id}")
         del self.policies[policy_id]
-        self.payoffs.entries = {
-            key: entry for key, entry in self.payoffs.entries.items()
-            if policy_id not in entry["profile"]
-        }
+        if not keep_payoffs:
+            self.payoffs.entries = {
+                key: entry for key, entry in self.payoffs.entries.items()
+                if policy_id not in entry["profile"]
+            }
         self.save()
 
     def policy_sets(self):

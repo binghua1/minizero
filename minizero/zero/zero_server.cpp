@@ -42,6 +42,17 @@ int calculateJPSROPlainCount(int total, float selfplay_ratio)
     return std::clamp(count, 0, total);
 }
 
+bool scheduleJPSROPlain(float selfplay_ratio, double& credit)
+{
+    const double ratio = std::clamp(static_cast<double>(selfplay_ratio), 0.0, 1.0);
+    if (ratio <= 0.0) { return false; }
+    if (ratio >= 1.0) { return true; }
+    credit += ratio;
+    if (credit < 1.0) { return false; }
+    credit -= 1.0;
+    return true;
+}
+
 std::vector<JPSROProfile> loadJPSROProfiles(const std::string& path)
 {
     std::ifstream stream(path);
@@ -181,6 +192,15 @@ bool ZeroWorkerSharedData::getSelfPlayData(ZeroSelfPlayData& sp_data)
     return true;
 }
 
+int ZeroWorkerSharedData::clearSelfPlayData()
+{
+    boost::lock_guard<boost::mutex> lock(mutex_);
+    const int count = static_cast<int>(sp_data_queue_.size());
+    std::queue<ZeroSelfPlayData> empty;
+    sp_data_queue_.swap(empty);
+    return count;
+}
+
 bool ZeroWorkerSharedData::isOptimizationPahse()
 {
     boost::lock_guard<boost::mutex> lock(mutex_);
@@ -285,6 +305,12 @@ void ZeroServer::run()
         syncConfig();
         selfPlay();
         optimization();
+        if (!config::zero_jpsro_sync_directory.empty() &&
+            iteration_ >= config::zero_jpsro_sync_first_iteration &&
+            config::zero_jpsro_sync_interval > 0 &&
+            (iteration_ - config::zero_jpsro_sync_first_iteration) % config::zero_jpsro_sync_interval == 0) {
+            syncJPSROMeta();
+        }
     }
 
     close();
@@ -306,9 +332,15 @@ void ZeroServer::initialize()
         if (config::zero_use_population) {
             throw std::runtime_error("profile-guided training already includes history and cannot use legacy population sampling simultaneously");
         }
-        jpsro_profiles_ = loadJPSROProfiles(config::zero_jpsro_profile_file);
+        if (!config::zero_jpsro_profile_file.empty()) {
+            jpsro_profiles_ = loadJPSROProfiles(config::zero_jpsro_profile_file);
+        } else if (config::zero_jpsro_sync_directory.empty()) {
+            throw std::runtime_error("zero_jpsro_profile_file is required without persistent meta synchronization");
+        }
         if (config::zero_jpsro_selfplay_ratio < 0.0f || config::zero_jpsro_selfplay_ratio > 1.0f ||
-            config::zero_jpsro_num_workers <= 0) {
+            config::zero_jpsro_num_workers <= 0 ||
+            (!config::zero_jpsro_sync_directory.empty() &&
+             (config::zero_jpsro_sync_first_iteration <= 0 || config::zero_jpsro_sync_interval <= 0))) {
             throw std::runtime_error("invalid hybrid JPSRO worker configuration");
         }
         shared_data_.logger_.addTrainingLog("[JPSRO Profiles] Loaded " + std::to_string(jpsro_profiles_.size()));
@@ -326,7 +358,9 @@ void ZeroServer::selfPlay()
     std::vector<int> game_lengths;
     std::vector<float> game_returns;
     std::vector<std::vector<float>> game_player_returns;
-    const int target_plain_games = config::zero_use_jpsro
+    const bool use_jpsro = isJPSROActive();
+    jpsro_plain_dispatch_credit_ = 0.0;
+    const int target_plain_games = use_jpsro
                                        ? calculateJPSROPlainCount(config::zero_num_games_per_iteration,
                                                                   config::zero_jpsro_selfplay_ratio)
                                        : config::zero_num_games_per_iteration;
@@ -345,11 +379,10 @@ void ZeroServer::selfPlay()
             // discard previous self-play games
             continue;
         }
-        if (config::zero_use_jpsro) {
+        if (use_jpsro) {
             const bool opponent_game = sp_data.game_record_.find("JI[") != std::string::npos;
             const int target_opponent_games = config::zero_num_games_per_iteration - target_plain_games;
-            const bool can_enforce_mix = config::zero_jpsro_num_workers > 1 &&
-                                         target_plain_games > 0 && target_opponent_games > 0;
+            const bool can_enforce_mix = target_plain_games > 0 && target_opponent_games > 0;
             if (can_enforce_mix &&
                 ((!opponent_game && plain_games >= target_plain_games) ||
                  (opponent_game && opponent_games >= target_opponent_games))) {
@@ -363,7 +396,7 @@ void ZeroServer::selfPlay()
         ++num_collect_game;
         total_data_length += sp_data.data_length_;
         if (sp_data.is_terminal_ && config::zero_use_population) { recordPopulationResult(sp_data); }
-        if (sp_data.is_terminal_ && config::zero_use_jpsro) {
+        if (sp_data.is_terminal_ && use_jpsro) {
             EnvironmentLoader env_loader;
             if (env_loader.loadFromString(sp_data.game_record_)) {
                 const std::string profile_id = env_loader.getTag("JI");
@@ -433,7 +466,7 @@ void ZeroServer::selfPlay()
                 " return=" + std::to_string(item.second.first / item.second.second));
         }
     }
-    if (config::zero_use_jpsro) {
+    if (use_jpsro) {
         for (const auto& item : guided_profile_return_stats_) {
             shared_data_.logger_.addTrainingLog(
                 "[Guided Pool Avg. Current Return] profile=" + item.first +
@@ -441,7 +474,7 @@ void ZeroServer::selfPlay()
                 " return=" + std::to_string(item.second.first / item.second.second));
         }
     }
-    if (config::zero_use_jpsro) {
+    if (use_jpsro) {
         shared_data_.logger_.addTrainingLog(
             "[JPSRO Game Mix] selfplay=" + std::to_string(plain_games) +
             " opponent=" + std::to_string(opponent_games));
@@ -482,20 +515,30 @@ void ZeroServer::selfPlay()
 
 void ZeroServer::broadcastSelfPlayJob()
 {
-    const std::vector<int> population_iterations = config::zero_use_jpsro ? std::vector<int>{} : getPopulationIterations();
+    const bool use_jpsro = isJPSROActive();
+    const std::vector<int> population_iterations = use_jpsro ? std::vector<int>{} : getPopulationIterations();
     boost::lock_guard<boost::mutex> lock(worker_mutex_);
     std::vector<boost::shared_ptr<ZeroWorkerHandler>> idle_workers;
     for (auto& worker : connections_) {
         if (worker->isIdle() && worker->getType() == "sp") { idle_workers.push_back(worker); }
     }
-    if (config::zero_use_jpsro &&
+    if (use_jpsro &&
         static_cast<int>(idle_workers.size()) < config::zero_jpsro_num_workers) {
         return;
     }
-    const int num_plain_selfplay = config::zero_use_jpsro
-                                       ? calculateJPSROPlainCount(idle_workers.size(), config::zero_jpsro_selfplay_ratio)
-                                       : 0;
-    if (config::zero_use_jpsro && !idle_workers.empty()) {
+    std::vector<bool> plain_assignments(idle_workers.size(), false);
+    int num_plain_selfplay = 0;
+    if (use_jpsro) {
+        for (size_t i = 0; i < idle_workers.size(); ++i) {
+            // Weighted round-robin works even with one worker.  The old
+            // per-broadcast rounding made any positive ratio select only
+            // plain self-play when a single worker was used.
+            plain_assignments[i] = scheduleJPSROPlain(
+                config::zero_jpsro_selfplay_ratio, jpsro_plain_dispatch_credit_);
+            num_plain_selfplay += plain_assignments[i] ? 1 : 0;
+        }
+    }
+    if (use_jpsro && !idle_workers.empty()) {
         shared_data_.logger_.addTrainingLog(
             "[JPSRO Worker Mix] selfplay=" + std::to_string(num_plain_selfplay) +
             " opponent=" + std::to_string(idle_workers.size() - num_plain_selfplay));
@@ -504,11 +547,10 @@ void ZeroServer::broadcastSelfPlayJob()
     for (auto& worker : idle_workers) {
         worker->setIdle(false);
         worker->write("load_model " + config::zero_training_directory + "/model/weight_iter_" + std::to_string(shared_data_.getModelIetration()) + ".pt");
-        const bool plain_selfplay = config::zero_use_jpsro &&
-                                    static_cast<int>((self_play_worker_index + iteration_) % idle_workers.size()) < num_plain_selfplay;
+        const bool plain_selfplay = use_jpsro && plain_assignments[self_play_worker_index];
         if (plain_selfplay) {
             worker->write("clear_population");
-        } else if (config::zero_use_jpsro) {
+        } else if (use_jpsro) {
             const float total_weight = std::accumulate(
                 jpsro_profiles_.begin(), jpsro_profiles_.end(), 0.0f,
                 [](float total, const JPSROProfile& profile) { return total + profile.weight; });
@@ -670,6 +712,57 @@ void ZeroServer::syncConfig()
 
     boost::lock_guard<boost::mutex> lock(worker_mutex_);
     for (auto worker : connections_) { worker->syncConfig(); }
+}
+
+bool ZeroServer::isJPSROActive() const
+{
+    return config::zero_use_jpsro && !jpsro_profiles_.empty();
+}
+
+void ZeroServer::syncJPSROMeta()
+{
+    namespace fs = std::filesystem;
+    const fs::path directory(config::zero_jpsro_sync_directory);
+    const fs::path request = directory / "meta_request";
+    const fs::path response = directory / "meta_response";
+    const fs::path temporary = directory / "meta_request.tmp";
+    const fs::path profile = directory / ("guided_after_" + std::to_string(iteration_) + ".tsv");
+    fs::create_directories(directory);
+    fs::remove(request);
+    fs::remove(response);
+    {
+        std::ofstream stream(temporary);
+        if (!stream) { throw std::runtime_error("cannot write JPSRO meta request"); }
+        stream << iteration_ << std::endl;
+    }
+    fs::rename(temporary, request);
+    shared_data_.logger_.addTrainingLog(
+        "[JPSRO Meta] Waiting at iteration " + std::to_string(iteration_));
+
+    while (!fs::exists(response)) {
+        boost::this_thread::sleep(boost::posix_time::milliseconds(100));
+    }
+    std::ifstream response_stream(response);
+    int response_iteration = -1;
+    response_stream >> response_iteration;
+    if (response_iteration != iteration_) {
+        throw std::runtime_error("JPSRO meta response iteration mismatch");
+    }
+    jpsro_profiles_ = loadJPSROProfiles(profile.string());
+    config::zero_jpsro_profile_file = profile.string();
+    const int discarded_games = shared_data_.clearSelfPlayData();
+    {
+        boost::lock_guard<boost::mutex> lock(worker_mutex_);
+        for (auto worker : connections_) {
+            if (worker->getType() == "sp") { worker->write("reset_profile_actors"); }
+        }
+    }
+    fs::remove(request);
+    fs::remove(response);
+    shared_data_.logger_.addTrainingLog(
+        "[JPSRO Meta] Loaded " + std::to_string(jpsro_profiles_.size()) +
+        " profiles for iteration " + std::to_string(iteration_ + 1) +
+        "; discarded " + std::to_string(discarded_games) + " stale games");
 }
 
 void ZeroServer::stopJob(const std::string& job_type)

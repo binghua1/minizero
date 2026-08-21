@@ -17,6 +17,8 @@ threads="${THREADS:-3}"
 mode="${MODE:-overwrite}"
 searches="${SEARCHES:-rank maxn}"
 baselines="${BASELINES:-nohead oldrank rankclass adaptivetrained}"
+rank_utility_weight="${RANK_UTILITY_WEIGHT:-0.75}"
+output_tag="${OUTPUT_TAG:-}"
 executable="${EXECUTABLE:-${repo_dir}/build/blokus10/minizero_blokus10}"
 
 latest_checkpoint_iter() {
@@ -42,6 +44,14 @@ if [[ "$mode" != "overwrite" && "$mode" != "resume" ]]; then
   echo "MODE must be overwrite or resume"
   exit 1
 fi
+if ! [[ "$rank_utility_weight" =~ ^(0([.][0-9]+)?|1([.]0+)?)$ ]]; then
+  echo "RANK_UTILITY_WEIGHT must be between 0 and 1"
+  exit 1
+fi
+if [[ -n "$output_tag" && ! "$output_tag" =~ ^[A-Za-z0-9_-]+$ ]]; then
+  echo "OUTPUT_TAG may contain only letters, digits, underscores, and hyphens"
+  exit 1
+fi
 if [[ -n "$num_games" && ( ! "$num_games" =~ ^[1-9][0-9]*$ ) ]]; then
   echo "NUM_GAMES must be a positive integer"
   exit 1
@@ -57,20 +67,24 @@ default_baseline_cfg="${repo_dir}/blokus10_maxn_01/blokus10_maxn_01.cfg"
 
 declare -A baseline_models=(
   [nohead]="${repo_dir}/blokus10_maxn_01/model/weight_iter_${baseline_iter}.pt"
+  [poolonly]="${repo_dir}/blokus10_balanced_population_maxn_nofilm_n50/model/weight_iter_${baseline_iter}.pt"
   [oldrank]="${repo_dir}/blokus10_maxn_01_head_rank_250000_rank_utility/model/weight_iter_${baseline_iter}.pt"
   [rankclass]="${repo_dir}/blokus10_maxn_rank_classification_n50/model/weight_iter_${baseline_iter}.pt"
   [adaptivetrained]="${repo_dir}/blokus10_rank_adaptive_lmax0p75_tau0p20_k12_n50/model/weight_iter_${baseline_iter}.pt"
   [oldpopulation]="${repo_dir}/blokus10_behavior_population_n50/model/weight_iter_${baseline_iter}.pt"
   [filmrank]="${repo_dir}/blokus10_balanced_population_rank_l0p75_n50/model/weight_iter_${baseline_iter}.pt"
+  [poolrank]="${repo_dir}/blokus10_balanced_population_rank_nofilm_l0p75_n50/model/weight_iter_${baseline_iter}.pt"
 )
 
 declare -A baseline_cfgs=(
   [nohead]="${default_baseline_cfg}"
+  [poolonly]="${repo_dir}/blokus10_balanced_population_maxn_nofilm_n50/blokus10_balanced_population_maxn_nofilm_n50.cfg"
   [oldrank]="${default_baseline_cfg}"
   [rankclass]="${default_baseline_cfg}"
   [adaptivetrained]="${default_baseline_cfg}"
   [oldpopulation]="${repo_dir}/blokus10_behavior_population_n50/blokus10_behavior_population_n50.cfg"
   [filmrank]="${repo_dir}/blokus10_balanced_population_rank_l0p75_n50/blokus10_balanced_population_rank_l0p75_n50.cfg"
+  [poolrank]="${repo_dir}/blokus10_balanced_population_rank_nofilm_l0p75_n50/blokus10_balanced_population_rank_nofilm_l0p75_n50.cfg"
 )
 
 need_file "$candidate_model"
@@ -78,7 +92,7 @@ need_file "$candidate_cfg"
 for baseline in $baselines; do
   if [[ -z "${baseline_models[$baseline]+x}" ]]; then
     echo "Unknown baseline: $baseline"
-    echo "Supported baselines: nohead oldrank rankclass adaptivetrained oldpopulation filmrank"
+    echo "Supported baselines: nohead poolonly oldrank rankclass adaptivetrained oldpopulation filmrank poolrank"
     exit 1
   fi
   need_file "${baseline_models[$baseline]}"
@@ -90,17 +104,21 @@ make_manifest() {
   local candidate_search=$2
   local baseline_name=$3
   local baseline_model=$4
+  local baseline_search=$5
+  local baseline_rank_weight=$6
   mkdir -p "$output"
 
   python3 - "$repo_dir" "$executable" "$candidate_model" "$candidate_cfg" \
     "$candidate_search" "$baseline_name" "$baseline_model" "$baseline_cfg" \
-    "$simulations" "$games_per_seating" "$num_games" > "$output/arena.json" <<'PY'
+    "$baseline_search" "$simulations" "$games_per_seating" "$num_games" \
+    "$rank_utility_weight" "$baseline_rank_weight" > "$output/arena.json" <<'PY'
 import json
 import sys
 
 (repo, executable, candidate_model, candidate_cfg, candidate_search,
- baseline_name, baseline_model, baseline_cfg, simulations, games_per_seating,
- num_games) = sys.argv[1:]
+ baseline_name, baseline_model, baseline_cfg, baseline_search, simulations,
+ games_per_seating, num_games, rank_utility_weight,
+ baseline_rank_weight) = sys.argv[1:]
 
 common = {
     "program_seed": "{seed}",
@@ -118,12 +136,12 @@ common = {
     "zero_use_population": "false",
 }
 
-def agent(name, model, cfg, search):
+def agent(name, model, cfg, search, rank_weight):
     values = dict(common)
     values.update({
         "nn_file_name": model,
         "actor_multiplayer_search_type": search,
-        "actor_rank_utility_weight": "0.75" if search == "rank" else "0",
+        "actor_rank_utility_weight": rank_weight if search == "rank" else "0",
     })
     conf = ":".join(f"{key}={value}" for key, value in values.items())
     return {
@@ -138,8 +156,8 @@ manifest = {
     "game": "blokus10",
     "players": ["b", "w", "r", "g"],
     "agents": [
-        agent(baseline_name, baseline_model, baseline_cfg, "maxn"),
-        agent(candidate_name, candidate_model, candidate_cfg, candidate_search),
+        agent(baseline_name, baseline_model, baseline_cfg, baseline_search, baseline_rank_weight),
+        agent(candidate_name, candidate_model, candidate_cfg, candidate_search, rank_utility_weight),
     ],
     "lineups": [
         [baseline_name, baseline_name, baseline_name, candidate_name],
@@ -173,18 +191,30 @@ else
 fi
 echo "simulations=${simulations}, noise=true, games=${total_games}"
 echo "GPU=${gpu}, THREADS=${threads}, searches=${searches}, baselines=${baselines}"
+echo "rank utility weight=${rank_utility_weight}, output tag=${output_tag:-none}"
 
 for search in $searches; do
   if [[ "$search" != "rank" && "$search" != "maxn" ]]; then
     echo "SEARCHES only supports rank and maxn"
     exit 1
   fi
+  if [[ "$search" == "rank" && "$rank_utility_weight" =~ ^0([.]0+)?$ ]]; then
+    echo "Rank search requires RANK_UTILITY_WEIGHT > 0; use SEARCHES=maxn for the lambda=0 control."
+    exit 1
+  fi
   for baseline in $baselines; do
-    output="${eval_root}/balancedrank${candidate_iter}_${search}_vs_${baseline}${baseline_iter}_maxn_n${simulations}_noise_${total_games}"
+    baseline_search=maxn
+    baseline_rank_weight=0
+    if [[ "$baseline" == poolrank || "$baseline" == filmrank ]]; then
+      baseline_search=rank
+      baseline_rank_weight="${BASELINE_RANK_UTILITY_WEIGHT:-0.75}"
+    fi
+    output="${eval_root}/balancedrank${candidate_iter}_${search}${output_tag:+_${output_tag}}_vs_${baseline}${baseline_iter}_${baseline_search}_n${simulations}_noise_${total_games}"
     baseline_cfg="${baseline_cfgs[$baseline]}"
-    make_manifest "$output" "$search" "${baseline}_maxn" "${baseline_models[$baseline]}"
+    make_manifest "$output" "$search" "${baseline}_${baseline_search}" \
+      "${baseline_models[$baseline]}" "$baseline_search" "$baseline_rank_weight"
     echo
-    echo "${search} candidate vs ${baseline} MaxN"
+    echo "${search} candidate vs ${baseline} ${baseline_search}"
     echo "result: ${output}"
     python3 "${repo_dir}/tools/multiplayer-eval.py" \
       "${output}/arena.json" "$output" \

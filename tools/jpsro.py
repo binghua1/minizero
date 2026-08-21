@@ -5,6 +5,7 @@ import argparse
 import importlib
 import json
 import sys
+import time
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -23,6 +24,7 @@ create_evaluation_manifest = _workflow.create_evaluation_manifest
 write_guided_plan = _workflow.write_guided_plan
 ingest_evaluation = _workflow.ingest_evaluation
 prune_population = _workflow.prune_population
+hard_prune_population = _workflow.hard_prune_population
 required_deviation_profiles = _workflow.required_deviation_profiles
 write_oracle_plan = _workflow.write_oracle_plan
 
@@ -84,10 +86,25 @@ def command_solve(args):
     missing = state.payoffs.missing(policy_sets, args.min_games)
     if missing:
         raise ValueError(f"cannot certify CCE: {len(missing)} restricted profiles need evaluation")
+    started = time.monotonic()
+
+    def report_progress(step, total, gap):
+        elapsed = time.monotonic() - started
+        rate = step / elapsed if elapsed else 0.0
+        remaining = (total - step) / rate if rate else float("inf")
+        print(
+            f"CCE solve: {step}/{total} ({100.0 * step / total:.1f}%), "
+            f"gap={gap:.6g}, elapsed={elapsed:.1f}s, ETA<={remaining:.1f}s",
+            flush=True,
+        )
+
+    print(f"solving CCE over {__import__('math').prod(len(x) for x in policy_sets)} profiles...",
+          flush=True)
     result = solve_cce(
         policy_sets, state.payoffs.indexed_means(policy_sets, args.min_games),
         args.iterations, args.tolerance, args.eta,
         state.config["utility_min"], state.config["utility_max"],
+        progress=report_progress,
     )
     output = state.write_meta_strategy(result)
     print(f"empirical CCE gap={output['gap']:.6g} after {output['iterations']} iterations")
@@ -133,10 +150,21 @@ def command_prune(args):
                       "remaining": len(state.policies)}, indent=2))
 
 
+def command_hard_prune(args):
+    state = JPSROState.load(args.run_dir)
+    protected = [item for item in args.protect.split(",") if item]
+    result = hard_prune_population(state, args.maximum, protected)
+    if args.output:
+        atomic_json(args.output, result)
+    print(json.dumps(result, indent=2))
+
+
 def command_admit_candidate(args):
     state = JPSROState.load(args.run_dir)
     result = admit_candidate(
-        state, args.candidate, args.min_gain, args.confidence)
+        state, args.candidate, args.min_gain, args.confidence,
+        max_regression=args.max_regression,
+        promote_all_players=args.promote_all_players)
     if args.output:
         atomic_json(args.output, result)
     print(json.dumps(result, indent=2))
@@ -244,6 +272,16 @@ def build_parser():
     item.set_defaults(func=command_prune)
 
     item = subparsers.add_parser(
+        "hard-prune",
+        help="hard-cap active policies by average CCE marginal mass",
+    )
+    item.add_argument("run_dir")
+    item.add_argument("--maximum", type=int, required=True)
+    item.add_argument("--protect", default="")
+    item.add_argument("--output")
+    item.set_defaults(func=command_hard_prune)
+
+    item = subparsers.add_parser(
         "admit-candidate",
         help="retain a candidate only for players with a significant deviation gain",
     )
@@ -251,6 +289,14 @@ def build_parser():
     item.add_argument("candidate")
     item.add_argument("--min-gain", type=float, default=0.02)
     item.add_argument("--confidence", type=float, default=2.0)
+    item.add_argument(
+        "--max-regression", type=float,
+        help="reject if any seat's mean deviation gain is below minus this value",
+    )
+    item.add_argument(
+        "--promote-all-players", action="store_true",
+        help="when accepted, register the candidate for every player seat",
+    )
     item.add_argument("--output")
     item.set_defaults(func=command_admit_candidate)
 

@@ -8,6 +8,11 @@ time-average is an approximate coarse-correlated equilibrium (CCE).
 import itertools
 import math
 
+try:
+    import numpy as np
+except ImportError:  # Keep the solver usable in minimal Python installations.
+    np = None
+
 
 def _profiles(policy_sets):
     return itertools.product(*(range(len(items)) for items in policy_sets))
@@ -42,20 +47,42 @@ def cce_gap(distribution, policy_sets, payoffs):
 def compact_cce_support(distribution, policy_sets, payoffs, tolerance):
     """Return the smallest top-mass prefix that still passes the CCE check."""
     ordered = sorted(distribution.items(), key=lambda item: item[1], reverse=True)
-    for size in range(1, len(ordered) + 1):
-        selected = ordered[:size]
-        total = sum(probability for _, probability in selected)
-        candidate = {profile: probability / total for profile, probability in selected}
-        gap, witness = cce_gap(candidate, policy_sets, payoffs)
-        if gap <= tolerance:
-            return candidate, gap, witness
+    # For a top-mass prefix, each deviation gain is a cumulative weighted sum.
+    # Updating those sums once per added profile changes this from O(N^2) to
+    # O(N * players * actions), which matters for 4,096+ profile games.
+    gains = [[0.0] * len(actions) for actions in policy_sets]
+    total = 0.0
+    for size, (profile, probability) in enumerate(ordered, 1):
+        total += probability
+        for player, actions in enumerate(policy_sets):
+            baseline = payoffs[profile][player]
+            for deviation in range(len(actions)):
+                deviated = list(profile)
+                deviated[player] = deviation
+                gains[player][deviation] += probability * (
+                    payoffs[tuple(deviated)][player] - baseline
+                )
+        best_gain = 0.0
+        witness = None
+        for player, actions in enumerate(policy_sets):
+            for deviation, numerator in enumerate(gains[player]):
+                gain = numerator / total
+                if gain > best_gain:
+                    best_gain = gain
+                    witness = {"player": player, "policy": actions[deviation]}
+        if best_gain <= tolerance:
+            selected = ordered[:size]
+            candidate = {
+                profile: probability / total for profile, probability in selected
+            }
+            return candidate, max(0.0, best_gain), witness
     gap, witness = cce_gap(distribution, policy_sets, payoffs)
     return distribution, gap, witness
 
 
 def solve_cce(policy_sets, payoffs, iterations=5000, tolerance=0.01,
               eta=None, utility_min=-1.0, utility_max=1.0,
-              check_interval=100):
+              check_interval=100, progress=None):
     """Solve a complete restricted game with simultaneous full-info Hedge.
 
     Args:
@@ -95,35 +122,77 @@ def solve_cce(policy_sets, payoffs, iterations=5000, tolerance=0.01,
     answer_witness = None
     completed = 0
 
+    # The restricted game is naturally a dense tensor.  Vectorizing these
+    # contractions avoids tens of millions of Python-level operations for an
+    # 8^4 JPSRO population, while retaining the old implementation as a
+    # fallback when NumPy is unavailable.
+    payoff_tensor = None
+    average_tensor = None
+    if np is not None:
+        shape = tuple(len(items) for items in policy_sets)
+        payoff_tensor = np.empty(shape + (len(policy_sets),), dtype=np.float64)
+        for profile in all_profiles:
+            payoff_tensor[profile] = payoffs[profile]
+        average_tensor = np.zeros(shape, dtype=np.float64)
+
     for step in range(1, iterations + 1):
         mixed = [_softmax(values) for values in log_weights]
-        joint = {}
-        for profile in all_profiles:
-            probability = math.prod(mixed[p][action] for p, action in enumerate(profile))
-            joint[profile] = probability
-            average[profile] += probability
-
         action_values = [[0.0] * len(items) for items in policy_sets]
-        for player, actions in enumerate(policy_sets):
+        if payoff_tensor is not None:
+            mixed_arrays = [np.asarray(values) for values in mixed]
+            joint_tensor = mixed_arrays[0]
+            for values in mixed_arrays[1:]:
+                joint_tensor = np.multiply.outer(joint_tensor, values)
+            average_tensor += joint_tensor
+            for player, actions in enumerate(policy_sets):
+                weighted = payoff_tensor[..., player]
+                for opponent, probabilities in enumerate(mixed_arrays):
+                    if opponent != player:
+                        reshape = [1] * len(policy_sets)
+                        reshape[opponent] = len(probabilities)
+                        weighted = weighted * probabilities.reshape(reshape)
+                axes = tuple(axis for axis in range(len(policy_sets)) if axis != player)
+                action_values[player] = np.sum(weighted, axis=axes).tolist()
+        else:
             for profile in all_profiles:
-                opponents_probability = math.prod(
-                    mixed[p][action] for p, action in enumerate(profile) if p != player
-                )
-                action_values[player][profile[player]] += (
-                    opponents_probability * payoffs[profile][player]
-                )
+                probability = math.prod(mixed[p][action] for p, action in enumerate(profile))
+                average[profile] += probability
+            for player, actions in enumerate(policy_sets):
+                for profile in all_profiles:
+                    opponents_probability = math.prod(
+                        mixed[p][action] for p, action in enumerate(profile) if p != player
+                    )
+                    action_values[player][profile[player]] += (
+                        opponents_probability * payoffs[profile][player]
+                    )
+
+        for player, actions in enumerate(policy_sets):
             for action in range(len(actions)):
                 normalized = (action_values[player][action] - utility_min) / scale
                 log_weights[player][action] += eta * normalized
 
         completed = step
         if step >= check_interval and (step % check_interval == 0 or step == iterations):
-            distribution = {profile: mass / step for profile, mass in average.items()}
+            if average_tensor is not None:
+                distribution = {
+                    profile: float(average_tensor[profile] / step)
+                    for profile in all_profiles
+                }
+            else:
+                distribution = {profile: mass / step for profile, mass in average.items()}
             answer_gap, answer_witness = cce_gap(distribution, policy_sets, payoffs)
+            if progress is not None:
+                progress(step, iterations, answer_gap)
             if answer_gap <= tolerance:
                 break
 
-    distribution = {profile: mass / completed for profile, mass in average.items()}
+    if average_tensor is not None:
+        distribution = {
+            profile: float(average_tensor[profile] / completed)
+            for profile in all_profiles
+        }
+    else:
+        distribution = {profile: mass / completed for profile, mass in average.items()}
     distribution = {profile: mass for profile, mass in distribution.items() if mass >= 1e-12}
     total = sum(distribution.values())
     distribution = {profile: mass / total for profile, mass in distribution.items()}

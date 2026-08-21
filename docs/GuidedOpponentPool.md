@@ -24,8 +24,11 @@ therefore not itself guaranteed to be a CCE. The certificate applies only to
 7. If admitted, fill the new restricted payoffs, solve a new CCE, and regenerate
    the plan. Otherwise CURRENT continues, but is not added to the certificate.
 
-There is no separately pretrained AlphaZero warm start and no reset between
-meta intervals.
+There is no separately pretrained AlphaZero warm start. By default one
+MiniZero server, learner, and set of self-play worker processes stay alive for
+the complete run. At each meta boundary the server pauses after optimization,
+the controller updates the empirical game, and those same workers load only
+the changed frozen-policy slots before continuing. CUDA is not reinitialized.
 
 ## Training distribution
 
@@ -129,7 +132,9 @@ tools/multiplayer-guided-pool.sh \
 TicTacMo/Connect3x3 default to three players and Blokus to four. Other games
 set `GUIDED_NUM_PLAYERS`. Repeating an identical command resumes the run;
 `GUIDED_TOTAL_ITERATIONS` may be increased to extend it. Other changed settings
-require a new run directory, and the saved total cannot be decreased.
+require a new run directory, and the saved total cannot be decreased. In the
+default persistent mode, total iterations must equal bootstrap iterations plus
+an integer multiple of the meta interval.
 
 ## Parameters
 
@@ -164,6 +169,7 @@ require a new run directory, and the saved total cannot be decreased.
 | `GUIDED_SELFPLAY_GPU` | `GUIDED_GPU` | One index per self-play worker |
 | `GUIDED_EVAL_GPU` | first guided GPU | Single payoff-evaluation GPU |
 | `GUIDED_PORT` | 10021 | Zero-server port |
+| `GUIDED_PERSISTENT_WORKERS` | true | Keep server, learner, and SP processes alive across meta updates |
 
 The four distribution ratios must be non-negative and sum to one. The
 10-iteration/20-game defaults intentionally spend less on payoff evaluation
@@ -175,14 +181,22 @@ than the earlier five-iteration/50-game Adaptive JPSRO run.
 - `frozen/p*.pt`: frozen candidates/population policies.
 - `meta/meta_strategy.json`: population CCE and empirical gap.
 - `meta/payoffs.json`: payoff means, variances, counts, and sample IDs.
-- `guided_after_*.tsv`: weighted plan loaded by self-play workers.
-- `guided_after_*.tsv.json`: hard/CCE/history contribution per plan row.
-- `admission_i*.json`: gains, standard errors, and admission decision.
+- `guided/guided_after_*.tsv`: weighted plan loaded by self-play workers.
+- `guided/guided_after_*.tsv.json`: hard/CCE/history contribution per plan row.
+- `guided/admission_i*.json`: gains, standard errors, and admission decision.
+- `evaluations/eval_*`: batched payoff games and manifests.
 - `controller_state.json`: completed controller stages used for safe resume.
 
-The learner, network architecture, MCTS budget, and replay implementation are
-unchanged. Opponent games may load up to `N-1` frozen networks; profiles are
-assigned per worker and network slots are reused instead of loading per game.
-Payoff evaluation is isolated from the training server and therefore never
-adds games to its replay buffer. A single stopped/reset persistent actor is
-reused across payoff profiles to avoid repeated CUDA and process startup.
+The learner, network architecture, MCTS budget, and rolling replay
+implementation are unchanged. The same learner process retains its replay
+state across meta boundaries, and every accepted iteration SGF remains on
+disk. Workers can finish a small number of games after the iteration quota is
+reached; only these uncommitted old-profile queue entries are discarded at a
+meta boundary so they cannot leak into the next iteration.
+
+Opponent games may load up to `N-1` frozen networks. Profiles are assigned per
+worker and existing network slots are reused, so a boundary reloads only model
+paths that changed. Payoff evaluation is isolated from the training server and
+never enters training replay. Its actor process is also persistent across
+payoff profiles. Set `GUIDED_PERSISTENT_WORKERS=false` only for compatibility
+with the older segmented quick-run controller.

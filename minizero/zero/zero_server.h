@@ -18,6 +18,7 @@ namespace minizero::zero {
 
 std::vector<float> calculatePopulationSeatBaseWeights(int min_seats, int max_seats, bool balance_seats);
 int calculateJPSROPlainCount(int total, float selfplay_ratio);
+bool scheduleJPSROPlain(float selfplay_ratio, double& credit);
 
 struct JPSROProfile {
     float weight;
@@ -67,6 +68,7 @@ public:
     }
 
     bool getSelfPlayData(ZeroSelfPlayData& sp_data);
+    int clearSelfPlayData();
     bool isOptimizationPahse();
     int getModelIetration();
 
@@ -130,6 +132,8 @@ protected:
     std::vector<float> getPopulationSeatWeights(int historical_iteration) const;
     void recordPopulationResult(const ZeroSelfPlayData& sp_data);
     void syncConfig();
+    bool isJPSROActive() const;
+    void syncJPSROMeta();
     void stopJob(const std::string& job_type);
     void close();
     void keepAlive();
@@ -145,6 +149,7 @@ protected:
     std::unordered_map<int64_t, std::pair<double, int>> population_seat_return_stats_;
     std::unordered_map<std::string, std::pair<double, int>> guided_profile_return_stats_;
     std::vector<JPSROProfile> jpsro_profiles_;
+    double jpsro_plain_dispatch_credit_ = 0.0;
 };
 
 } // namespace minizero::zero

@@ -64,6 +64,9 @@ bool zero_jpsro_eval_only = false;
 int zero_jpsro_replay_start_iteration = 1;
 float zero_jpsro_selfplay_ratio = 0.7f;
 int zero_jpsro_num_workers = 1;
+std::string zero_jpsro_sync_directory = "";
+int zero_jpsro_sync_first_iteration = 0;
+int zero_jpsro_sync_interval = 0;
 
 // learner parameters
 bool learner_use_per = false;
@@ -174,6 +177,9 @@ void setConfiguration(ConfigureLoader& cl)
     cl.addParameter("zero_jpsro_replay_start_iteration", zero_jpsro_replay_start_iteration, "deprecated compatibility option; hybrid JPSRO keeps the normal rolling replay", "Zero");
     cl.addParameter("zero_jpsro_selfplay_ratio", zero_jpsro_selfplay_ratio, "fraction of JPSRO workers assigned to all-seat current-policy self-play", "Zero");
     cl.addParameter("zero_jpsro_num_workers", zero_jpsro_num_workers, "number of self-play workers that must connect before hybrid JPSRO dispatch", "Zero");
+    cl.addParameter("zero_jpsro_sync_directory", zero_jpsro_sync_directory, "directory for persistent-worker JPSRO meta-update handshakes", "Zero");
+    cl.addParameter("zero_jpsro_sync_first_iteration", zero_jpsro_sync_first_iteration, "first persistent-worker JPSRO meta-update iteration", "Zero");
+    cl.addParameter("zero_jpsro_sync_interval", zero_jpsro_sync_interval, "iterations between persistent-worker JPSRO meta updates; 0 disables", "Zero");
 
     // learner parameters
     cl.addParameter("learner_use_per", learner_use_per, "true for enabling Prioritized Experience Replay", "Learner");                                                              // ref: PER

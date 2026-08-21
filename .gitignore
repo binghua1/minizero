@@ -10,6 +10,16 @@ __pycache__
 *_gaz_*/
 *_mz_*/
 *_gmz_*/
+runs/
+/blokus*/
+/tictacmo_*/
+
+# Local checkpoints and generated evaluation artifacts
+*.pt
+*.pkl
+
+# Accidental files produced by pasted environment assignments
+GUIDED_*=*
 
 # others
 .vscode

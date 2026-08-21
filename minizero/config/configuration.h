@@ -66,6 +66,9 @@ extern bool zero_jpsro_eval_only;
 extern int zero_jpsro_replay_start_iteration;
 extern float zero_jpsro_selfplay_ratio;
 extern int zero_jpsro_num_workers;
+extern std::string zero_jpsro_sync_directory;
+extern int zero_jpsro_sync_first_iteration;
+extern int zero_jpsro_sync_interval;
 
 // learner parameters
 extern bool learner_use_per;

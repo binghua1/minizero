@@ -2,6 +2,7 @@
 """Evaluate fixed JPSRO profiles with MiniZero's batched self-play actor."""
 
 import argparse
+import concurrent.futures
 import json
 import os
 import queue
@@ -131,12 +132,13 @@ def stop_process(process):
 class PersistentActor:
     """One batched actor reused across all payoff profiles in a manifest."""
 
-    def __init__(self, manifest, parallel_games, cpu_threads, gpu, stderr_path):
+    def __init__(self, manifest, parallel_games, cpu_threads, gpu, stderr_path,
+                 seed_offset=0):
         self.manifest = manifest
         self.output = queue.Queue()
         self.stderr = stderr_path.open("w")
         initial_model = next(iter(manifest["models"].values()))
-        seed = manifest["seed"]
+        seed = manifest["seed"] + seed_offset
         command = [
             str(manifest["executable"]), "-mode", "sp",
             "-conf_file", str(manifest["config_file"]),
@@ -256,50 +258,92 @@ def run(args):
         if specs:
             pending.append((lineup_id, profile, specs))
 
-    actor = None
+    actors = []
+    executor = None
     try:
         if pending:
             parallel_games = min(args.batch_size, max(len(specs) for _, _, specs in pending))
-            actor = PersistentActor(
-                manifest, parallel_games, args.cpu_threads, args.gpu,
-                log_dir / "persistent_actor.log",
-            )
+            actor_count = min(args.actors, len(pending))
+            actors = [
+                PersistentActor(
+                    manifest, parallel_games, args.cpu_threads, args.gpu,
+                    log_dir / f"persistent_actor_{index}.log",
+                    seed_offset=index * 1000003,
+                )
+                for index in range(actor_count)
+            ]
             print(
-                f"persistent payoff actor: GPU {args.gpu}, batch={parallel_games}, "
+                f"persistent payoff actors: GPU {args.gpu}, actors={actor_count}, "
+                f"batch={parallel_games}/actor, threads={args.cpu_threads}/actor, "
                 f"profiles={len(pending)}",
                 flush=True,
             )
+            executor = concurrent.futures.ThreadPoolExecutor(max_workers=actor_count)
         with games_path.open("a") as stream:
-            for pending_index, (lineup_id, profile, specs) in enumerate(pending, 1):
+            next_pending = 0
+            futures = {}
+
+            def submit(actor_index):
+                nonlocal next_pending
+                if next_pending >= len(pending):
+                    return
+                pending_index = next_pending + 1
+                lineup_id, profile, specs = pending[next_pending]
+                next_pending += 1
                 print(
                     f"profile {pending_index}/{len(pending)}: "
-                    f"{'/'.join(profile)}, {len(specs)} games, batch={parallel_games}",
+                    f"{'/'.join(profile)}, {len(specs)} games, "
+                    f"actor={actor_index}, batch={parallel_games}",
                     flush=True,
                 )
-                games, elapsed = run_profile(actor, lineup_id, profile, len(specs))
-                for (game_id, repeat), (returns, game_record) in zip(specs, games):
-                    winner_seat, draw = result_info(returns)
-                    record = {
-                        "game_id": game_id,
-                        "lineup_id": lineup_id,
-                        "seating_id": 0,
-                        "repeat": repeat,
-                        "seating": profile,
-                        "players": manifest["players"],
-                        "moves": [],
-                        "returns": returns,
-                        "winner_seat": winner_seat,
-                        "winner_agent": None if winner_seat is None else profile[winner_seat],
-                        "draw": draw,
-                        "error": None,
-                        "duration_seconds": round(elapsed / len(games), 6),
-                    }
-                    stream.write(json.dumps(record, sort_keys=True) + "\n")
-                    (output_dir / "sgf" / f"game_{game_id:06d}.sgf").write_text(game_record + "\n")
-                stream.flush()
-                print(f"  completed in {elapsed:.2f}s", flush=True)
+                future = executor.submit(
+                    run_profile, actors[actor_index], lineup_id, profile, len(specs)
+                )
+                futures[future] = (actor_index, pending_index, lineup_id, profile, specs)
+
+            for actor_index in range(len(actors)):
+                submit(actor_index)
+
+            while futures:
+                done, _ = concurrent.futures.wait(
+                    futures, return_when=concurrent.futures.FIRST_COMPLETED
+                )
+                for future in done:
+                    actor_index, pending_index, lineup_id, profile, specs = futures.pop(future)
+                    games, elapsed = future.result()
+                    for (game_id, repeat), (returns, game_record) in zip(specs, games):
+                        winner_seat, draw = result_info(returns)
+                        record = {
+                            "game_id": game_id,
+                            "lineup_id": lineup_id,
+                            "seating_id": 0,
+                            "repeat": repeat,
+                            "seating": profile,
+                            "players": manifest["players"],
+                            "moves": [],
+                            "returns": returns,
+                            "winner_seat": winner_seat,
+                            "winner_agent": None if winner_seat is None else profile[winner_seat],
+                            "draw": draw,
+                            "error": None,
+                            "duration_seconds": round(elapsed / len(games), 6),
+                        }
+                        stream.write(json.dumps(record, sort_keys=True) + "\n")
+                        (output_dir / "sgf" / f"game_{game_id:06d}.sgf").write_text(game_record + "\n")
+                    stream.flush()
+                    print(
+                        f"  profile {pending_index}/{len(pending)} completed by "
+                        f"actor {actor_index} in {elapsed:.2f}s",
+                        flush=True,
+                    )
+                    submit(actor_index)
     finally:
-        if actor is not None:
+        if executor is not None:
+            # Python 3.8 (used by the training container) does not support
+            # the cancel_futures keyword added in Python 3.9. All submitted
+            # profile futures have completed on the normal path anyway.
+            executor.shutdown(wait=False)
+        for actor in actors:
             actor.close()
         try:
             lock_path.unlink()
@@ -319,11 +363,13 @@ def main():
                         help="parallel games inside one batched actor")
     parser.add_argument("--cpu-threads", type=int, default=4,
                         help="CPU worker threads supporting batched search")
+    parser.add_argument("--actors", type=int, default=1,
+                        help="independent profile actors to run concurrently on the GPU")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
-    if args.batch_size < 1 or args.cpu_threads < 1:
-        parser.error("batch size and CPU thread count must be positive")
+    if args.batch_size < 1 or args.cpu_threads < 1 or args.actors < 1:
+        parser.error("batch size, CPU thread count, and actors must be positive")
     if args.resume and args.overwrite:
         parser.error("--resume and --overwrite are mutually exclusive")
     try:
